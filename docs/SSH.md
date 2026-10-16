@@ -143,7 +143,7 @@ was run on a throwaway user before any real account was added.
 |---|---|
 | The login hangs or shows a `Password:` prompt | The PAM lines are not in `/etc/pam.d/sshd`, or the user is not in the group, or the module is not installed (`install-ssh.sh`) |
 | No QR code, no text | The ssh PAM step is `pam_exec` instead of `pam_thessley_phone.so` (sshd holds plain text back) |
-| "Address already in use" in the log | A previous request is still waiting (the helper listens on port 47810 for up to 60 s) |
+| "Address already in use" in the log | All approval ports 47810–47819 are taken: ten logins are waiting at once (each waits up to 60 s). One waiting login uses 47810, the next free port is used for the next |
 | `Permission denied (keyboard-interactive)` right after the key | The phone did not answer in time, was denied, or the user has no enrolled phone while `require` is on |
 | The phone is not asked although it should be | A valid pass exists (`thessley-pam passes`), or the connection comes from an exempted address |
 | The phone is asked every time | `grace` is 0 for `sshd`, or each login comes from a different address |

@@ -11,6 +11,8 @@ A user with no enrolled phone is not affected (exit 0), so the line can't lock o
 Whatever is printed on stdout is shown to the person by sudo (pam_exec's stdout option), line by line.
 """
 
+import contextlib
+import errno
 import os
 import secrets
 import subprocess
@@ -24,6 +26,7 @@ from . import grants, machine, protocol, store
 from .listener import Listener
 
 PORT = 47810
+PORT_TRIES = 10  # logins at the same time each need a listener; the next free port from PORT is used (see _listening)
 WAIT = 60  # seconds to approve on the phone
 
 OK, REFUSED = 0, 1
@@ -32,6 +35,29 @@ OK, REFUSED = 0, 1
 def _log(msg: str, warn: bool = False) -> None:
     syslog.openlog("thessley-pam", syslog.LOG_PID, syslog.LOG_AUTHPRIV)
     syslog.syslog(syslog.LOG_WARNING if warn else syslog.LOG_INFO, msg)
+
+
+@contextlib.contextmanager
+def _listening(ip: str, routes: dict):
+    """A listener on PORT, or on the next free port when another login is still waiting for its approval.
+    The port travels in the link, so the phone and the desktop app go wherever it ended up."""
+    lst = None
+    for port in range(PORT, PORT + PORT_TRIES):
+        candidate = Listener(ip, port, routes)
+        try:
+            candidate.__enter__()
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise
+            continue
+        lst = candidate
+        break
+    if lst is None:
+        raise OSError(errno.EADDRINUSE, os.strerror(errno.EADDRINUSE))
+    try:
+        yield lst
+    finally:
+        lst.__exit__(None, None, None)
 
 
 def _say(text: str) -> None:
@@ -116,9 +142,9 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
 
     path = f"/thessley-pam/v1/{req_type}/{request_id}/respond"
     try:
-        with Listener(ip, PORT, {path: respond}) as lst:
+        with _listening(ip, {path: respond}) as lst:
             link = f"thessleypam://{req_type}?" + urlencode({
-                "h": ip, "p": PORT, "fp": lst.fingerprint, "id": request_id, "n": nonce,
+                "h": ip, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
                 "m": mid, "hn": host, "u": username, "tty": tty,
             })
             if login:

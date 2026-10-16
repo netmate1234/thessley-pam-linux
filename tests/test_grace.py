@@ -287,3 +287,27 @@ class ShowLinkCommandTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_two_logins_at_once_get_different_ports(self):
+        """A second login while the first waits must not fail with "Address already in use"."""
+        rcs = {}
+        for name in ("a", "b"):
+            threading.Thread(target=lambda n=name: rcs.setdefault(n, pam.run(dict(self.env, PAM_RHOST="192.168.1.50" if n == "a" else "192.168.1.51"))), daemon=True).start()
+            for _ in range(60):
+                if len(self.links) > (1 if name == "b" else 0):
+                    break
+                time.sleep(0.05)
+        self.assertEqual(len(self.links), 2)
+        ports = [int(parse_qs(urlparse(link).query)["p"][0]) for link in self.links]
+        self.assertEqual(ports, [47897, 47898])
+        for link in self.links:  # both can be approved
+            q = {k: v[0] for k, v in parse_qs(urlparse(link).query).items()}
+            ts = int(time.time())
+            msg = protocol.canonical("sudo", q["id"], q["m"], q["u"], q["n"], ts, "approve")
+            body = {"credential_id": self.device["credential_id"], "action": "approve", "timestamp": ts, "signature": self.phone.sign(msg)}
+            self.assertEqual(_post(q, f"/thessley-pam/v1/sudo/{q['id']}/respond", body)[0], 200)
+        for _ in range(100):
+            if len(rcs) == 2:
+                break
+            time.sleep(0.05)
+        self.assertEqual(rcs, {"a": 0, "b": 0})
