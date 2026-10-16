@@ -4,7 +4,8 @@
 #   sudo ./install-admin.sh
 #
 # Installs only: the window, its root helper, a polkit action that lets the helper run after one administrator
-# password, a menu entry, and the current cli.py / keyring.py (the window opens `thessley-pam enroll` and
+# password, a menu entry, and the current cli.py / keyring.py / store.py / pam.py (disabled phones are honoured by pam.py;
+# the window opens `thessley-pam enroll` and
 # `keyring-link` in a terminal). It does not touch /etc/pam.d. Undo: sudo ./uninstall-admin.sh
 set -eu
 
@@ -17,7 +18,7 @@ command -v pkexec >/dev/null || { echo "Missing pkexec: sudo apt install policyk
 src=$(cd "$(dirname "$0")" && pwd)
 lib=/usr/local/lib/thessley-pam
 
-for f in admin_helper.py admin_gui.py keyring.py cli.py; do
+for f in admin_helper.py admin_gui.py keyring.py cli.py store.py pam.py; do
     install -o root -g root -m 0644 "$src/thessley_pam/$f" "$lib/thessley_pam/$f"
 done
 install -o root -g root -m 0755 "$src/admin-helper" "$lib/admin-helper"

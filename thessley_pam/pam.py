@@ -54,7 +54,7 @@ def run(env: dict, login: bool = False) -> int:
     service = env.get("PAM_SERVICE", "")
     tty = env.get("PAM_TTY", "") or "-"
     try:
-        devices = store.devices(username)
+        devices = store.active_devices(username)
     except KeyError:
         _log(f"unknown user {username!r} ({service})", warn=True)
         return REFUSED

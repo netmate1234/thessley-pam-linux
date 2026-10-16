@@ -5,12 +5,16 @@ two steps that need a typed secret (adding a phone, linking the keyring) open a 
 passes through this window.
 
     thessley-pam-admin
+
+What it can switch, each with its own switch: the QR code on the login screen, the QR code on your lock screen,
+the phone step for sudo, and the keyring unlock after a phone login. Each phone has a switch (allowed to approve
+or not) and a bin (forget it). The keyring link can be forgotten.
 """
 
 import datetime
 import json
 import os
-import shlex
+import re
 import shutil
 import subprocess
 import sys
@@ -29,9 +33,19 @@ GREETER = "/etc/gdm3/greeter.dconf-defaults"
 PAM_DIR = "/etc/pam.d"
 ADMIN_CMD = "sudo /usr/local/sbin/thessley-pam"
 TERMINALS = (("gnome-terminal", ["--"]), ("ptyxis", ["--"]), ("x-terminal-emulator", ["-e"]), ("xterm", ["-e"]))
+PKEXEC_WAIT = 300  # seconds a person gets to type the administrator password
 
 OK, WARN, OFF = "ok", "warn", "off"
 ICONS = {OK: "object-select-symbolic", WARN: "dialog-warning-symbolic", OFF: "window-close-symbolic"}
+
+# key, title; the first three can be switched with admin rights, "lock-qr" by you alone.
+SWITCHES = (
+    ("login-qr", "QR code on the login screen"),
+    ("lock-qr", "QR code on your lock screen"),
+    ("sudo-phone", "Phone approval for sudo"),
+    ("keyring-unlock", "Keyring unlock after a phone login"),
+)
+NEEDS_ADMIN = {"login-qr", "sudo-phone", "keyring-unlock"}
 
 
 def _read(path: str) -> str:
@@ -57,28 +71,57 @@ def session_extension_enabled() -> bool:
     return UUID in out
 
 
+def set_lock_qr(on: bool) -> bool:
+    """Your own lock-screen switch: no administrator needed. True if it worked."""
+    try:
+        r = subprocess.run(["gnome-extensions", "enable" if on else "disable", UUID], capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def polkit_problem(pam_dir: str = PAM_DIR) -> str:
+    """Why the administrator password prompt cannot work on this computer, if we can tell from here.
+
+    A pam_yubico line with the `debug` option in common-auth writes its debug text on standard output. The
+    polkit prompt reads the PAM helper's standard output as a protocol, so every such line makes GNOME abort the
+    sign-in ("Unknown line ... from helper") and no prompt ever appears.
+    """
+    for line in _read(os.path.join(pam_dir, "common-auth")).splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        if re.search(r"\bpam_yubico\.so\b", line) and re.search(r"\bdebug\b", line):
+            return ("The administrator password prompt is broken on this computer: the pam_yubico line in "
+                    "/etc/pam.d/common-auth has the option 'debug', whose text makes every GNOME sign-in prompt "
+                    "abort. Remove the word 'debug' from that line (as administrator, from a terminal), then "
+                    "press Unlock again.")
+    return ""
+
+
 def local_status(pam_dir: str = PAM_DIR, extension_dir: str = EXTENSION_DIR, greeter: str = GREETER,
-                 session_enabled=session_extension_enabled, module_present=_security_dir_has_module) -> list[tuple[str, str, str]]:
-    """What can be seen without root: (title, OK/WARN/OFF, one line of explanation)."""
+                 session_enabled=session_extension_enabled, module_present=_security_dir_has_module) -> list[tuple[str, str, str, str]]:
+    """What can be seen without root: (key, title, OK/WARN/OFF, one line of explanation), one row per switch."""
+    titles = dict(SWITCHES)
     gdm = _read(os.path.join(pam_dir, "gdm-thessley"))
     sudo = _read(os.path.join(pam_dir, "sudo"))
+    installed = bool(gdm) and os.path.isdir(extension_dir)
     rows = []
-    if gdm and os.path.isdir(extension_dir):
-        if UUID in _read(greeter):
-            rows.append(("QR code on the login screen", OK, "Installed and switched on. The password box still works."))
-        else:
-            rows.append(("QR code on the login screen", WARN, "Installed, but not switched on for the login screen."))
+    if installed:
+        on = UUID in _read(greeter)
+        rows.append(("login-qr", titles["login-qr"], OK if on else OFF,
+                     "On. The password box still works." if on else "Installed, but switched off for the login screen."))
     else:
-        rows.append(("QR code on the login screen", OFF, "Not installed (sudo ./install-login.sh in thessley-pam-linux)."))
-    rows.append(("QR code on your lock screen", OK if session_enabled() else OFF,
-                 "Switched on for your account." if session_enabled()
-                 else f"Switch it on with:  gnome-extensions enable {UUID}"))
-    rows.append(("Phone approval for sudo", OK if "thessley" in sudo else OFF,
-                 "sudo asks your phone after the password." if "thessley" in sudo else "sudo does not ask your phone."))
-    wired = "pam_thessley_authtok" in gdm and module_present()
-    rows.append(("Keyring unlock after a phone login", OK if wired else OFF,
-                 "Wired into the login. Needs your password sealed in the TPM (see below)." if wired
-                 else "Not wired in (sudo ./install-keyring.sh, then install-login.sh)."))
+        rows.append(("login-qr", titles["login-qr"], OFF, "Not installed (sudo ./install-login.sh in thessley-pam-linux)."))
+    lock_on = session_enabled()
+    rows.append(("lock-qr", titles["lock-qr"], OK if lock_on else OFF,
+                 "On for your account." if lock_on else "Off for your account."))
+    sudo_live = any(l.split()[:1] == ["auth"] and "pam-helper" in l for l in sudo.splitlines())
+    rows.append(("sudo-phone", titles["sudo-phone"], OK if sudo_live else OFF,
+                 "sudo asks your phone after the password." if sudo_live else "sudo does not ask your phone."))
+    keyring_live = any(l.split()[:1] == ["auth"] and "pam_thessley_authtok" in l for l in gdm.splitlines())
+    rows.append(("keyring-unlock", titles["keyring-unlock"], OK if keyring_live and module_present() else OFF,
+                 "Wired into the login. Needs your password sealed in the TPM (see below)." if keyring_live and module_present()
+                 else "Not wired in."))
     return rows
 
 
@@ -91,11 +134,15 @@ class Backend:
 
     def _run(self, *args: str) -> dict:
         try:
-            out = subprocess.run(["pkexec", HELPER, *args], capture_output=True, text=True, timeout=180)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            out = subprocess.run(["pkexec", HELPER, *args], capture_output=True, text=True, timeout=PKEXEC_WAIT)
+        except subprocess.TimeoutExpired:
+            return {"error": "The administrator sign-in timed out. If no password box appeared, see the warning at the top."}
+        except OSError as exc:
             return {"error": f"Could not run pkexec: {exc}"}
-        if out.returncode in (126, 127):
+        if out.returncode == 126:
             return {"error": "Cancelled."}
+        if out.returncode == 127:
+            return {"error": "Not authorised."}
         try:
             return json.loads(out.stdout.strip().splitlines()[-1])
         except (ValueError, IndexError):
@@ -106,6 +153,12 @@ class Backend:
 
     def remove_phone(self, credential_id: str) -> dict:
         return self._run("remove-phone", credential_id)
+
+    def set_phone(self, credential_id: str, enabled: bool) -> dict:
+        return self._run("set-phone", credential_id, "on" if enabled else "off")
+
+    def set_feature(self, name: str, on: bool) -> dict:
+        return self._run("set-feature", name, "on" if on else "off")
 
     def keyring_forget(self) -> dict:
         return self._run("keyring-forget")
@@ -123,10 +176,10 @@ def open_in_terminal(command: str) -> bool:
 
 
 class AdminWindow(Adw.ApplicationWindow):
-    def __init__(self, app, backend=None, status=local_status):
-        super().__init__(application=app, title="Thessley Login", default_width=640, default_height=760)
+    def __init__(self, app, backend=None, status=local_status, problem=polkit_problem, lock_switch=set_lock_qr):
+        super().__init__(application=app, title="Thessley Login", default_width=680, default_height=820)
         self.backend = backend or Backend()
-        self.status_fn = status
+        self.status_fn, self.problem_fn, self.lock_switch = status, problem, lock_switch
         self.data: dict | None = None
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
@@ -147,21 +200,48 @@ class AdminWindow(Adw.ApplicationWindow):
 
     # ---- drawing -------------------------------------------------------------------------------------------------
 
-    def _fresh_group(self, title: str, description: str = "") -> Adw.PreferencesGroup:
+    def _fresh_group(self, title: str = "", description: str = "") -> Adw.PreferencesGroup:
         g = Adw.PreferencesGroup(title=title, description=description)
         self.page.add(g)
         self.groups.append(g)
         return g
+
+    def _switch(self, active: bool, sensitive: bool, on_toggle, tooltip: str = "") -> Gtk.Switch:
+        sw = Gtk.Switch(active=active, sensitive=sensitive, valign=Gtk.Align.CENTER, tooltip_text=tooltip or None)
+        sw.connect("state-set", lambda _s, state: on_toggle(state) or False)  # False: let the switch show the new state
+        return sw
 
     def render(self) -> None:
         for g in self.groups:
             self.page.remove(g)
         self.groups = []
 
+        problem = self.problem_fn()
+        if problem:
+            g = self._fresh_group()
+            row = Adw.ActionRow(title="Administrator sign-in is broken", subtitle=problem)
+            row.add_prefix(Gtk.Image(icon_name=ICONS[WARN]))
+            row.set_subtitle_selectable(True)
+            row.set_subtitle_lines(0)
+            g.add(row)
+
         g = self._fresh_group("Login on this computer")
-        for title, state, text in self.status_fn():
+        features = (self.data or {}).get("features", {})
+        server_keys = {"login-qr": "login_qr", "sudo-phone": "sudo_phone", "keyring-unlock": "keyring_unlock"}
+        for key, title, state, text in self.status_fn():
+            if key in server_keys and features.get(server_keys[key]) in ("on", "off"):
+                state = OK if features[server_keys[key]] == "on" else OFF  # the helper saw the real file
             row = Adw.ActionRow(title=title, subtitle=text)
             row.add_prefix(Gtk.Image(icon_name=ICONS[state]))
+            if key == "lock-qr":
+                known = os.path.isdir(EXTENSION_DIR) or state == OK
+                row.add_suffix(self._switch(state == OK, known, lambda on: self.toggle_lock(on), "Your own lock screen"))
+            elif key in NEEDS_ADMIN:
+                if features.get(server_keys[key]) in ("on", "off"):
+                    row.add_suffix(self._switch(state == OK, True, lambda on, k=key: self.toggle_feature(k, on)))
+                else:
+                    row.set_subtitle(text + " Unlock below to change this.")
+                    row.add_suffix(self._switch(state == OK, False, lambda on: None))
             g.add(row)
         if self.data and self.data.get("passwordless_sudo"):
             row = Adw.ActionRow(title="sudo needs no password", subtitle="Passwordless sudo is on for your account, so "
@@ -181,8 +261,11 @@ class AdminWindow(Adw.ApplicationWindow):
             g.add(Adw.ActionRow(title="No phone is enrolled", subtitle="Press + at the top to add one."))
         else:
             for p in self.data["phones"]:
-                row = Adw.ActionRow(title=p["label"] or "Unnamed phone",
+                off = p.get("disabled")
+                row = Adw.ActionRow(title=(p["label"] or "Unnamed phone") + ("  (switched off)" if off else ""),
                                     subtitle=f"added {when(p['enrolled_at'])} · last used {when(p['last_used'])} · {p['credential_id']}")
+                row.add_suffix(self._switch(not off, True, lambda on, cid=p["credential_id"]: self.toggle_phone(cid, on),
+                                            "Allowed to approve logins and sudo"))
                 trash = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Remove this phone")
                 trash.add_css_class("flat")
                 trash.connect("clicked", self.confirm_remove, p)
@@ -208,7 +291,7 @@ class AdminWindow(Adw.ApplicationWindow):
             link.connect("clicked", self.link_keyring)
             row.add_suffix(link)
             if k["sealed"]:
-                forget = Gtk.Button(label="Forget", valign=Gtk.Align.CENTER)
+                forget = Gtk.Button(label="Forget", valign=Gtk.Align.CENTER, tooltip_text="Delete the sealed password")
                 forget.add_css_class("destructive-action")
                 forget.connect("clicked", self.confirm_forget)
                 row.add_suffix(forget)
@@ -224,6 +307,9 @@ class AdminWindow(Adw.ApplicationWindow):
         if not privileged:
             self.render()
             return False
+        if self.problem_fn():
+            self.toast("Fix the administrator sign-in first (see the warning at the top).")
+        self.toast("Waiting for the administrator password…")
 
         def work():
             result = self.backend.state()
@@ -238,6 +324,17 @@ class AdminWindow(Adw.ApplicationWindow):
             self.data = result
         self.render()
         return False
+
+    def toggle_lock(self, on: bool) -> None:
+        if not self.lock_switch(on):
+            self.toast("Could not change your lock-screen setting.")
+        GLib.idle_add(self.render)
+
+    def toggle_feature(self, key: str, on: bool) -> None:
+        self._do(lambda: self.backend.set_feature(key, on), "Switched on." if on else "Switched off.")
+
+    def toggle_phone(self, credential_id: str, on: bool) -> None:
+        self._do(lambda: self.backend.set_phone(credential_id, on), "Phone allowed." if on else "Phone switched off.")
 
     def add_phone(self, *_):
         if not open_in_terminal(f"{ADMIN_CMD} enroll"):
@@ -262,8 +359,9 @@ class AdminWindow(Adw.ApplicationWindow):
 
     def confirm_remove(self, _btn, phone: dict) -> None:
         self._confirm(f"Remove {phone['label'] or 'this phone'}?",
-                      "It will no longer be able to approve logins or sudo on this computer. The app on the phone "
-                      "keeps its entry until you remove it there too.",
+                      "Its key is forgotten here: it can never approve logins or sudo on this computer again, and "
+                      "adding it back means scanning a new code. The app on the phone keeps its entry until you remove "
+                      "it there too. To keep the key but stop it approving, switch it off instead.",
                       "Remove", lambda: self._do(lambda: self.backend.remove_phone(phone["credential_id"]), "Removed."))
 
     def confirm_forget(self, *_) -> None:
@@ -290,13 +388,13 @@ class AdminWindow(Adw.ApplicationWindow):
 
 
 class AdminApp(Adw.Application):
-    def __init__(self, backend=None, status=local_status):
+    def __init__(self, backend=None, status=local_status, problem=polkit_problem, lock_switch=set_lock_qr):
         super().__init__(application_id=os.environ.get("THESSLEY_ADMIN_APP_ID", "se.thessley.PamAdmin"),
                          flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
-        self.backend, self.status = backend, status
+        self.backend, self.status, self.problem, self.lock_switch = backend, status, problem, lock_switch
 
     def do_activate(self):
-        win = self.props.active_window or AdminWindow(self, self.backend, self.status)
+        win = self.props.active_window or AdminWindow(self, self.backend, self.status, self.problem, self.lock_switch)
         win.present()
 
 

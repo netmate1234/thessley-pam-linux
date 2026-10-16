@@ -72,7 +72,7 @@ def write_enrolled_list() -> None:
         if not entry.endswith(".json") or entry.startswith("."):
             continue
         with open(os.path.join(USERS, entry)) as f:
-            if json.load(f).get("devices"):
+            if any(not d.get("disabled") for d in json.load(f).get("devices", [])):
                 names.append(entry[:-5])
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".thessley-pam-enrolled.")
     with os.fdopen(fd, "w") as f:
@@ -82,7 +82,27 @@ def write_enrolled_list() -> None:
 
 
 def devices(username: str) -> list[dict]:
+    """Every enrolled phone, including disabled ones (for listing and managing)."""
     return load(username)["devices"]
+
+
+def active_devices(username: str) -> list[dict]:
+    """The phones that may approve things: not disabled. A user whose phones are all disabled is treated as having none."""
+    return [d for d in devices(username) if not d.get("disabled")]
+
+
+def set_disabled(username: str, credential_id: str, disabled: bool) -> bool:
+    """Switch a phone off (or on) without forgetting its key. False if there is no such phone."""
+    data = load(username)
+    for d in data["devices"]:
+        if d["credential_id"] == credential_id:
+            if disabled:
+                d["disabled"] = True
+            else:
+                d.pop("disabled", None)
+            save(username, data)
+            return True
+    return False
 
 
 def add_device(username: str, public_key: str, label: str, attestation_chain: list[str]) -> dict:

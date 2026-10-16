@@ -193,7 +193,7 @@ def helper_main(argv: list[str], *, euid: int | None = None, out=None, base: str
         if out.isatty():
             _log("keyring: refusing to write the password to a terminal", warn=True)
             return 1
-        if not (phones if phones is not None else store.devices)(username):
+        if not (phones if phones is not None else store.active_devices)(username):
             return 1  # only users who set up phone login
         if not is_linked(username, base):
             return 1

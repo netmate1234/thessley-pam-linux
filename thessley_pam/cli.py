@@ -154,7 +154,7 @@ def cmd_list(args) -> int:
     import datetime
     for d in devs:
         when = datetime.datetime.fromtimestamp(d["enrolled_at"]).strftime("%Y-%m-%d %H:%M")
-        print(f"{d['credential_id']}  {d['label']:<24}  enrolled {when}")
+        print(f"{d['credential_id']}  {d['label']:<24}  enrolled {when}" + ("  (disabled)" if d.get("disabled") else ""))
     return 0
 
 
