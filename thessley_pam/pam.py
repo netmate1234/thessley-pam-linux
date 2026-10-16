@@ -132,6 +132,9 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
                     _say(line)
                 if os.path.exists(os.path.join(store.BASE, "show-link")):
                     _say(f"Link: {link}")
+            if grace > 0 and not login:
+                # sshd drops text printed after its last question, so say this before the phone is answered.
+                _say(f"After you approve, your next login from {rhost} needs no phone for {grace:g} h.")
             if marker:
                 # pam_thessley_phone.so (for sshd, which holds back plain text until PAM asks a question) reads
                 # everything up to this line, shows it together with a prompt, and then waits for the exit code.
