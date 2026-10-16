@@ -80,6 +80,15 @@ def add_device(username: str, public_key: str, label: str, attestation_chain: li
     return device
 
 
+def touch(username: str, credential_id: str) -> None:
+    data = load(username)
+    for d in data["devices"]:
+        if d["credential_id"] == credential_id:
+            d["last_used"] = int(time.time())
+            save(username, data)
+            return
+
+
 def remove_device(username: str, credential_id: str) -> bool:
     data = load(username)
     before = len(data["devices"])

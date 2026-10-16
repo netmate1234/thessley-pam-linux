@@ -1,0 +1,10 @@
+#!/usr/bin/python3 -I
+# Called by pam_exec (with seteuid) during sudo's auth step. Must live in a root-owned directory that
+# nobody else can write to: it runs as root. Only the installed copy may be named in /etc/pam.d.
+import sys
+
+sys.path.insert(0, "/usr/local/lib/thessley-pam")
+
+from thessley_pam.pam import main
+
+sys.exit(main())
