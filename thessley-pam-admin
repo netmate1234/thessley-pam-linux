@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+# The Thessley Login admin window. Runs as you; it asks for an administrator password only when it has to.
+import sys
+
+sys.path.insert(0, "/usr/local/lib/thessley-pam")
+
+from thessley_pam.admin_gui import main
+
+sys.exit(main())

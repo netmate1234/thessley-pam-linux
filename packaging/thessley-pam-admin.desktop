@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Thessley Login
+GenericName=Phone login for this computer
+Comment=See and manage the phones that may log in to this computer
+Exec=/usr/local/bin/thessley-pam-admin
+Icon=dialog-password-symbolic
+Terminal=false
+Categories=System;Security;
+Keywords=login;phone;passkey;thessley;sudo;keyring;
+StartupNotify=true

@@ -1,0 +1,10 @@
+#!/usr/bin/python3
+# The root side of thessley-pam-admin, started by pkexec (see packaging/org.thessley.pam.policy). Must live in a
+# root-owned directory. It only acts for the account that started pkexec, and answers with one line of JSON.
+import sys
+
+sys.path.insert(0, "/usr/local/lib/thessley-pam")
+
+from thessley_pam.admin_helper import main
+
+sys.exit(main(sys.argv[1:]))

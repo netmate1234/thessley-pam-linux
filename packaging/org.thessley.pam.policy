@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Lets the thessley-pam-admin window run its root helper after one administrator password (kept for a few
+     minutes). The helper only ever acts for the account that started it. -->
+<policyconfig>
+  <vendor>Thessley</vendor>
+  <action id="org.thessley.pam.admin">
+    <description>Manage phone login on this computer</description>
+    <message>Authentication is required to manage the phones that may log in to this computer</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <!-- admin-helper is a Python script: polkit names the interpreter and the script separately. -->
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/python3</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">/usr/local/lib/thessley-pam/admin-helper</annotate>
+  </action>
+</policyconfig>
