@@ -17,6 +17,9 @@
  * inside the PAM handle; a file named after user and client address carries it.
  *
  *   session  optional  pam_thessley_phone.so
+ *
+ * A refusal (no phone, no answer in time, denied) is shown as a question ("... Press Enter: "): sshd drops plain
+ * PAM text when a login fails, so without a question the person would only see "Permission denied".
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -88,6 +91,20 @@ static int note_path(pam_handle_t *pamh, char *out, size_t n)
             return 0;
     int w = snprintf(out, n, NOTE_DIR "/%s@%s", user, rhost);
     return w > 0 && (size_t)w < n;
+}
+
+/* Show a refusal reason in a way sshd passes on: as a question, answered with Enter (the answer is ignored). */
+static int say_refusal(pam_handle_t *pamh, char *msg)
+{
+    size_t n = strlen(msg);
+    while (n > 0 && (msg[n - 1] == '\n' || msg[n - 1] == '\r' || msg[n - 1] == ' '))
+        msg[--n] = '\0';
+    if (n == 0)
+        return 0;
+    char *reply = NULL;
+    pam_prompt(pamh, PAM_PROMPT_ECHO_ON, &reply, "%s\nPress Enter: ", msg);
+    free(reply);
+    return 1;
 }
 
 static int write_note(pam_handle_t *pamh, const char *text)
@@ -209,14 +226,38 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
         struct timespec nap = { 0, 100 * 1000 * 1000 };
         nanosleep(&nap, NULL);
     }
-    close(fds[0]);
     int ok = done && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    int explained = 0;  /* a refusal was shown to the person: tell sshd not to ask again (PAM_MAXTRIES) */
     if (!marker_seen && len > 0) {
         /* A pass was used: leave the note for the session step. Anything else (a refusal, no phone): say it now. */
-        if (!(ok && write_note(pamh, text)))
-            pam_info(pamh, "%s", text);
+        if (ok) {
+            if (!write_note(pamh, text))
+                pam_info(pamh, "%s", text);
+        } else {
+            explained = say_refusal(pamh, text);
+        }
+    } else if (marker_seen && !ok && done) {
+        /* The helper printed its verdict after the wait line ("no answer", "denied"): collect and show it. */
+        char after[1024];
+        size_t m = 0;
+        int fl = fcntl(fds[0], F_GETFL);
+        if (fl >= 0)
+            fcntl(fds[0], F_SETFL, fl | O_NONBLOCK);
+        for (;;) {
+            ssize_t r = read(fds[0], after + m, sizeof after - 1 - m);
+            if (r < 0 && errno == EINTR)
+                continue;
+            if (r <= 0)
+                break;
+            m += (size_t)r;
+            if (m >= sizeof after - 1)
+                break;
+        }
+        after[m] = '\0';
+        explained = say_refusal(pamh, after);
     }
-    return ok ? PAM_SUCCESS : PAM_AUTH_ERR;
+    close(fds[0]);
+    return ok ? PAM_SUCCESS : (explained ? PAM_MAXTRIES : PAM_AUTH_ERR);
 }
 
 PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)

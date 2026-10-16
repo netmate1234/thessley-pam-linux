@@ -55,6 +55,11 @@ that note is simply not shown):
 
     session  optional  pam_thessley_phone.so
 
+When the phone step refuses (no phone enrolled, no answer in time, denied), the module shows the reason as a question
+("... Press Enter:") and tells sshd not to retry, so the person sees why and the connection ends with "Too many
+authentication failures". Plain PAM text would not do: sshd drops it when a login fails, and the client would only say
+"Permission denied (keyboard-interactive)".
+
 Everyone not in the group keeps the old rules: the two PAM lines are skipped for them, and password and
 keyboard-interactive logins stay switched off by `sshd_config` as before.
 
