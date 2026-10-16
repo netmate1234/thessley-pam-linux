@@ -1,0 +1,8 @@
+{
+  "uuid": "thessley-passkey-login@eagleeye-intelligence.com",
+  "name": "Thessley Passkey Login",
+  "description": "Log in or unlock by scanning a QR code with the Thessley Passkey app. The password keeps working as before.",
+  "shell-version": ["50"],
+  "session-modes": ["user", "unlock-dialog", "gdm"],
+  "version": 1
+}

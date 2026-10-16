@@ -38,9 +38,18 @@ def _say(text: str) -> None:
     print(text, flush=True)
 
 
-def run(env: dict) -> int:
+QR_MARKER = "THESSLEY-QR "  # the GNOME Shell extension draws the QR code from this line
+
+
+def run(env: dict, login: bool = False) -> int:
+    """sudo mode (default): a second step after the password; users without a phone pass through.
+
+    login mode (--login, /etc/pam.d/gdm-thessley): the phone *instead of* the password, on the GNOME login
+    and lock screens, next to the normal password prompt. Nothing else stands between this and a session,
+    so a user without a phone is refused here, never let through.
+    """
     if env.get("PAM_TYPE") != "auth":
-        return OK  # only the auth step is ours; account/session/password pass through
+        return REFUSED if login else OK  # gdm-thessley has no other auth step; never succeed by default
     username = env.get("PAM_USER", "")
     service = env.get("PAM_SERVICE", "")
     tty = env.get("PAM_TTY", "") or "-"
@@ -50,7 +59,8 @@ def run(env: dict) -> int:
         _log(f"unknown user {username!r} ({service})", warn=True)
         return REFUSED
     if not devices:
-        return OK
+        return REFUSED if login else OK
+    req_type = "login" if login else "sudo"
 
     by_id = {d["credential_id"]: d for d in devices}
     mid, host, ip = machine.machine_id(), machine.hostname(), machine.lan_ip()
@@ -75,7 +85,7 @@ def run(env: dict) -> int:
             return 400, {"result": "error", "message": "Unknown action."}
         if not protocol.timestamp_ok(timestamp):
             return 400, {"result": "error", "message": "Phone clock is off by more than a minute."}
-        msg = protocol.canonical("sudo", request_id, mid, username, nonce, timestamp, action)
+        msg = protocol.canonical(req_type, request_id, mid, username, nonce, timestamp, action)
         if not protocol.verify(device["public_key"], signature, msg):
             _log(f"bad signature from {client_ip} for {username} ({cred})", warn=True)
             return 400, {"result": "error", "message": "Signature did not verify."}
@@ -85,18 +95,22 @@ def run(env: dict) -> int:
         done.set()
         return 200, {"result": "ok"}
 
-    path = f"/thessley-pam/v1/sudo/{request_id}/respond"
+    path = f"/thessley-pam/v1/{req_type}/{request_id}/respond"
     try:
         with Listener(ip, PORT, {path: respond}) as lst:
-            link = "thessleypam://sudo?" + urlencode({
+            link = f"thessleypam://{req_type}?" + urlencode({
                 "h": ip, "p": PORT, "fp": lst.fingerprint, "id": request_id, "n": nonce,
                 "m": mid, "hn": host, "u": username, "tty": tty,
             })
-            qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "2", link],
-                                check=True, capture_output=True, text=True).stdout
-            _say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
-            for line in qr.splitlines():
-                _say(line)
+            if login:
+                # GNOME shows no text art; the extension turns this one line into a QR code.
+                _say(QR_MARKER + link)
+            else:
+                qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "2", link],
+                                    check=True, capture_output=True, text=True).stdout
+                _say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
+                for line in qr.splitlines():
+                    _say(line)
             approved_in_time = done.wait(WAIT)
             time.sleep(0.5)  # let the phone receive its reply before the listener closes
     except OSError as e:
@@ -124,7 +138,7 @@ def run(env: dict) -> int:
 
 def main() -> int:
     try:
-        return run(dict(os.environ))
+        return run(dict(os.environ), login="--login" in sys.argv[1:])
     except Exception as e:  # strict: any unexpected failure refuses
         _log(f"error: {e!r}", warn=True)
         print("Thessley Passkey: internal error. Refusing.", flush=True)

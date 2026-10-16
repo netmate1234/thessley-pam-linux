@@ -1,0 +1,19 @@
+.thessley-qr-box {
+  margin-top: 18px;
+  spacing: 8px;
+}
+
+.thessley-qr-label {
+  font-size: 10pt;
+}
+
+.thessley-qr-card {
+  background-color: #ffffff;
+  border-radius: 14px;
+  padding: 16px;
+}
+
+/* QrCode takes its module colour from the foreground colour */
+.thessley-qr-code {
+  color: #000000;
+}

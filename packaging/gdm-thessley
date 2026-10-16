@@ -1,0 +1,24 @@
+#%PAM-1.0
+# Thessley Passkey: log in to GNOME by approving on the phone, instead of typing the password.
+# Started next to gdm-password by the thessley-passkey-login GNOME Shell extension; whichever succeeds first
+# wins, so the password always remains available. Copy of gdm-password with the auth step replaced.
+#
+# The phone step is the only auth step: pam-helper --login refuses any user without an enrolled phone.
+# The login keyring: with `sudo thessley-pam keyring-link` done (install-keyring.sh first), the user's password is
+# sealed in the TPM and handed to pam_gnome_keyring after the phone approves, so the keyring unlocks as it does for a
+# typed password. Without it (or if the TPM refuses), the login still works and GNOME asks for the keyring later.
+auth    requisite       pam_nologin.so
+auth    required        pam_succeed_if.so user != root quiet_success
+auth    requisite       pam_exec.so stdout seteuid /usr/local/lib/thessley-pam/pam-helper --login
+auth    [success=ok default=ignore module_unknown=ignore]        pam_thessley_authtok.so
+auth    optional        pam_gnome_keyring.so
+@include common-account
+session [success=ok ignore=ignore module_unknown=ignore default=bad]        pam_selinux.so close
+session required        pam_loginuid.so
+session [success=ok ignore=ignore module_unknown=ignore default=bad]        pam_selinux.so open
+session optional        pam_keyinit.so force revoke
+session required        pam_limits.so
+session required        pam_env.so readenv=1
+session required        pam_env.so readenv=1 user_readenv=1 envfile=/etc/default/locale
+@include common-session
+session optional        pam_gnome_keyring.so auto_start

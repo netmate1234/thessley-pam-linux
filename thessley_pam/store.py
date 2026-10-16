@@ -16,6 +16,10 @@ import time
 
 BASE = "/etc/thessley-pam"
 USERS = os.path.join(BASE, "users")
+# World-readable list of user names that have at least one phone, one per line. The GNOME Shell extension runs
+# as the gdm user (login screen) or as the user (lock screen) and can't read BASE; it uses this to decide
+# whether to offer the QR code at all. Holds names only, no keys.
+ENROLLED = "/etc/thessley-pam-enrolled"
 
 
 def _check_user(username: str) -> None:
@@ -59,6 +63,22 @@ def save(username: str, data: dict) -> None:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+    write_enrolled_list()
+
+
+def write_enrolled_list() -> None:
+    names = []
+    for entry in sorted(os.listdir(USERS)):
+        if not entry.endswith(".json") or entry.startswith("."):
+            continue
+        with open(os.path.join(USERS, entry)) as f:
+            if json.load(f).get("devices"):
+                names.append(entry[:-5])
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".thessley-pam-enrolled.")
+    with os.fdopen(fd, "w") as f:
+        f.write("".join(n + "\n" for n in names))
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, ENROLLED)
 
 
 def devices(username: str) -> list[dict]:

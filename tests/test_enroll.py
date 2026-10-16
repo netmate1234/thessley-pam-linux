@@ -66,6 +66,7 @@ class EnrollTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         store.BASE = self.tmp.name
         store.USERS = os.path.join(self.tmp.name, "users")
+        store.ENROLLED = os.path.join(self.tmp.name, "enrolled")
         self.user = os.environ.get("USER") or "ubuntu"
         self.links = []
         self.answer = True
