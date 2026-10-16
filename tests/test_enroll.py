@@ -195,12 +195,42 @@ class SelfEnrollTest(EnrollTest):
         self.assertIn("normal user", problem(None))
         self.assertIn("normal user", problem("root"))
         self.assertIn("No such user", problem("no-such-user-x"))
-        # A second phone needs an administrator.
+        self.assertEqual(cli.self_enroll_route(self.user), ("first", ""))
+        # A second phone is allowed, once the first one has approved it.
         device = store.add_device(self.user, FakePhone().spki, "Existing", [])
-        self.assertIn("already have a phone", problem(self.user))
+        self.assertIsNone(problem(self.user))
+        self.assertEqual(cli.self_enroll_route(self.user), ("approve", ""))
         # All phones switched off (a lost phone): administrator only, so the first-come slot does not reopen.
         store.set_disabled(self.user, device["credential_id"], True)
         self.assertIn("switched off here", problem(self.user))
+        self.assertEqual(cli.self_enroll_route(self.user)[0], None)
+
+    def test_a_second_phone_needs_the_first_one_to_approve(self):
+        store.add_device(self.user, FakePhone().spki, "Existing", [])
+        asked = []
+        saved = cli.pam.run
+        try:
+            # The existing phone says no: nothing starts, nothing is added.
+            cli.pam.run = lambda env, **kw: (asked.append(env), 1)[1]
+            self.assertEqual(cli.cmd_enroll_me(types.SimpleNamespace(link=False)), 1)
+            self.assertEqual(self.links, [])
+            self.assertEqual(len(store.devices(self.user)), 1)
+            self.assertEqual((asked[0]["PAM_USER"], asked[0]["PAM_SERVICE"]), (self.user, "thessley-enroll"))
+            # The existing phone says yes: the normal enrolment follows, for the same account.
+            cli.pam.run = lambda env, **kw: (asked.append(env), 0)[1]
+            t, q = self.start_me()
+            self.assertEqual(q["u"], self.user)
+            phone = FakePhone()
+            self.assertEqual(phone.post(q, phone.enroll_body(q))[1]["result"], "ok")
+            t.join(10)
+            self.assertEqual(len(store.devices(self.user)), 2)
+        finally:
+            cli.pam.run = saved
+
+    def test_the_approval_never_leaves_a_pass(self):
+        """"adding a device" is its own service name: even with passes switched on for ssh it asks every time."""
+        self.grants.set_grace("sshd", 4)
+        self.assertEqual(self.grants.grace_hours(cli.APPROVE_SERVICE), 0)
 
     def test_switched_off_by_an_administrator(self):
         self.grants.set_self_enroll(False)

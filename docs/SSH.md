@@ -150,7 +150,7 @@ Things to know:
 ## A user adds their own phone (no administrator)
 
 An administrator adds phones with `sudo thessley-pam enroll --user NAME`. A normal user, who has no sudo rights, can add
-their **own first phone** instead, the way the Windows version allows it:
+their **own phones** instead, the way the Windows version allows it (the first one freely, more with approval):
 
     sudo ./install-selfenroll.sh            once, as an administrator: one file in /etc/sudoers.d
     sudo thessley-pam enroll-me             then, as that user, in a terminal (add --link for the desktop app)
@@ -159,8 +159,10 @@ It shows the same QR code and 6-digit code, and the user types `yes`. How it sta
 
 - **The account is not chosen by the user.** The command takes it from sudo (`SUDO_USER`) and has no `--user` option, so
   nobody can add a phone for someone else. The sudoers line allows exactly `enroll-me` and `enroll-me --link`, nothing else.
-- **Only the first phone.** An account that already has a phone, or whose phones are all switched off (a lost phone),
-  is refused: those need an administrator (`sudo thessley-pam enroll --user NAME`).
+- **The first phone** needs no approval (there is nobody to ask). **Any further phone** needs a fresh approval from a phone
+  already enrolled for that account: `enroll-me` shows the usual QR/link, and the phone's screen says "Approve adding a
+  device?". No pass ever counts for this, and a stolen password alone cannot add a phone. If all the account's phones are
+  switched off (a lost phone), only an administrator can add one (`sudo thessley-pam enroll --user NAME`).
 - **Trade-off:** until a phone is enrolled, whoever can run a session as that account (it takes its password) can enrol
   their own phone first. If you do not want that, turn it off and let only administrators add phones:
 

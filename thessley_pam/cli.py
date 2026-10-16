@@ -6,8 +6,8 @@
     sudo thessley-pam grace   [--service S --hours H]   ask the phone once per H hours for service S (0 = always ask)
     sudo thessley-pam require [--service S on|off]       refuse users with no phone for service S
     sudo thessley-pam show-link [on|off]             also print each approval's link as text (desktop app)
-    sudo thessley-pam enroll-me [--link]            a user adds their FIRST phone for their own account (see install-selfenroll.sh)
-    sudo thessley-pam self-enroll [on|off]          may users do that (on by default)
+    sudo thessley-pam enroll-me [--link]            a user adds a phone for their own account (see install-selfenroll.sh)
+    sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd phone needs the 1st to approve
     sudo thessley-pam passes                            who holds a phone pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a phone login unlock the GNOME keyring (see keyring.py)
@@ -27,12 +27,13 @@ import sys
 import threading
 from urllib.parse import urlencode
 
-from . import grants, listener, machine, protocol, store
+from . import grants, listener, machine, pam, protocol, store
 
 DEFAULT_PORT = 47810
 ENROLL_WAIT = 180   # seconds the QR code stays valid
 CONFIRM_WAIT = 90   # seconds to type "yes" once the codes are shown
 LABEL = re.compile(r"^[\w .,'()+-]{1,64}$")
+APPROVE_SERVICE = "thessley-enroll"  # the name the phone sees on the "adding a device?" request (display only)
 
 
 def _need_root() -> None:
@@ -152,25 +153,30 @@ def cmd_enroll(args) -> int:
     return 1
 
 
-def self_enroll_problem(username: str | None) -> str | None:
-    """Why this account may not enrol a phone itself, or None if it may. Only ever the FIRST phone of an account:
-    anyone who can run a session as that account (it takes its password) could otherwise add one, so a second phone,
-    or a replacement after the phones were switched off, needs an administrator (sudo thessley-pam enroll --user NAME)."""
+def self_enroll_route(username: str | None) -> tuple[str | None, str]:
+    """How this account may enrol a phone itself: ("first", "") when it has none, ("approve", "") when it has one that
+    must say yes first, or (None, why not). A first phone is the only one nobody has to approve; anyone who can run a
+    session as the account (it takes its password) could add one, so any further phone needs a fresh approval from
+    a phone already enrolled (no pass ever counts), and phones that are all switched off (lost) need an administrator."""
     if not username or username == "root":
-        return "This is for a normal user, run through sudo. An administrator uses: sudo thessley-pam enroll --user NAME"
+        return None, "This is for a normal user, run through sudo. An administrator uses: sudo thessley-pam enroll --user NAME"
     try:
         pwd.getpwnam(username)
     except KeyError:
-        return f"No such user: {username}"
+        return None, f"No such user: {username}"
     if not grants.self_enroll_allowed():
-        return "Adding a phone yourself is switched off on this computer. Ask an administrator."
+        return None, "Adding a phone yourself is switched off on this computer. Ask an administrator."
     devices = store.devices(username)
     if any(not d.get("disabled") for d in devices):
-        return ("You already have a phone for this account. Adding another needs an administrator: "
-                f"sudo thessley-pam enroll --user {username}")
+        return "approve", ""
     if devices:
-        return "Your phones are switched off here, so a new one needs an administrator."
-    return None
+        return None, "Your phones are switched off here, so a new one needs an administrator."
+    return "first", ""
+
+
+def self_enroll_problem(username: str | None) -> str | None:
+    route, why = self_enroll_route(username)
+    return why if route is None else None
 
 
 def cmd_enroll_me(args) -> int:
@@ -178,13 +184,20 @@ def cmd_enroll_me(args) -> int:
     sudo says is calling (SUDO_USER, which the caller cannot choose): nobody can add a phone for another account."""
     _need_root()
     username = os.environ.get("SUDO_USER")
-    problem = self_enroll_problem(username)
-    if problem:
+    route, problem = self_enroll_route(username)
+    if route is None:
         print(problem)
         return 1
     import syslog
     syslog.openlog("thessley-pam", syslog.LOG_PID, syslog.LOG_AUTHPRIV)
-    syslog.syslog(syslog.LOG_INFO, f"self-enrol started by {username!r}")
+    syslog.syslog(syslog.LOG_INFO, f"self-enrol started by {username!r} ({route})")
+    if route == "approve":
+        print(f"You already have a phone for '{username}'. It must approve adding another one first.")
+        approved = pam.run({"PAM_TYPE": "auth", "PAM_USER": username, "PAM_SERVICE": APPROVE_SERVICE, "PAM_TTY": "-"})
+        if approved != pam.OK:
+            print("Not approved. Nothing was added.")
+            return 1
+        print("Approved. Now add the new phone.")
     return cmd_enroll(argparse.Namespace(user=username, port=DEFAULT_PORT, link=getattr(args, "link", False)))
 
 

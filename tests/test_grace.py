@@ -166,6 +166,13 @@ class PamPassTest(unittest.TestCase):
         self.login()
         self.assertEqual(self.login(env=dict(self.env, PAM_RHOST="192.168.1.77")), (0, True))
 
+    def test_adding_a_device_always_asks(self):
+        """"Approve adding a device" (enroll-me for a second phone) is a service of its own: no pass ever counts."""
+        self.login()  # a pass for sshd now exists
+        env = dict(self.env, PAM_SERVICE="thessley-enroll")
+        self.assertEqual(self.login(env=env), (0, True))
+        self.assertEqual(self.login(env=env), (0, True))  # and the approval leaves no pass behind
+
     def test_another_service_is_not_covered(self):
         self.login()
         grants.set_grace("sudo", 4)

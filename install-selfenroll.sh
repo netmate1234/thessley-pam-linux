@@ -1,13 +1,14 @@
 #!/bin/sh
-# Lets any user add their OWN first phone, without being an administrator:
+# Lets any user add their OWN phones, without being an administrator:
 #
 #   sudo ./install-selfenroll.sh                  (once, as an administrator)
 #   sudo thessley-pam enroll-me                   (then, as that user, in a terminal)
 #
 # It adds one file to /etc/sudoers.d that lets everyone run exactly "thessley-pam enroll-me" (and "... enroll-me
 # --link") as root, without a password. That command takes the account from sudo (SUDO_USER, which the caller cannot
-# choose), so nobody can add a phone for another account; it only ever adds the FIRST phone of an account (a second one,
-# or a replacement for switched-off phones, needs an administrator: sudo thessley-pam enroll --user NAME).
+# choose), so nobody can add a phone for another account. The FIRST phone of an account needs no approval; any further
+# phone needs a fresh yes from a phone already enrolled ("Approve adding a device?"). Replacing switched-off phones (a
+# lost phone) needs an administrator: sudo thessley-pam enroll --user NAME.
 #
 # Trade-off: whoever can run a session as that account (it takes its password) can enrol their own phone first. Switch
 # it off any time with:   sudo thessley-pam self-enroll off     (on again: self-enroll on)
