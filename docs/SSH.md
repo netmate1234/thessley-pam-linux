@@ -79,6 +79,16 @@ Check what applies to whom without connecting:
     sudo sshd -T -C user=ubuntu,host=x,addr=192.168.1.111 | grep -E '^(authenticationmethods|kbdinteractiveauthentication)'
     sudo sshd -T -C user=ubuntu,host=x,addr=192.168.1.112 | grep -E '^(authenticationmethods|kbdinteractiveauthentication)'
 
+## Reference: the OPi5 (set up 2026-10-16)
+
+`sshtest` and `ubuntu` are in `thessley-ssh`, `grace` is 4 h and `require` is on for `sshd`. **No address is exempted**:
+`ubuntu` needs the key and a phone approval from this PC too (an exemption was tried first, then removed on request).
+Consequences accepted there: every deploy or script needs an approved pass (one approval covers 4 hours from this
+address); when it runs out, unattended connections wait about 2 minutes and fail until someone approves a new
+request; clients must not use `BatchMode=yes`. `ajoub` is outside the group and logs in as before. Backups of
+`sshd_config` from before each change are `/etc/ssh/sshd_config.bak-thessley*`; to bring the exemption back, re-add
+the `Match User ubuntu Address ...` block above.
+
 ## Daily use
 
     sudo thessley-pam passes                  who holds a pass and for how long (under a minute shows as "0 min")
