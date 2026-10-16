@@ -89,6 +89,54 @@ request; clients must not use `BatchMode=yes`. `ajoub` is outside the group and 
 `sshd_config` from before each change are `/etc/ssh/sshd_config.bak-thessley*`; to bring the exemption back, re-add
 the `Match User ubuntu Address ...` block above.
 
+## A second approver, so a lost phone does not lock you out
+
+`require` refuses a group member with no enrolled phone, and a user normally has one phone. If it is lost, broken or
+switched off, `ubuntu` cannot get in over ssh any more. Enrol a second approver while the phone still works. The
+Thessley Passkey desktop app (`thessley-passkey-linux`, GTK on Ubuntu, Qt on Windows) speaks the same protocol as the
+phone app and counts as one more approver for the same user. Any number can be enrolled; any one of them approves.
+
+Enrol the desktop app (do this from a login that already works; the server must be reachable from the PC over the LAN):
+
+    # 1. on the server: print approval links as text under the QR code (the desktop app cannot scan)
+    sudo thessley-pam show-link on
+
+    # 2. on the server: start the enrolment; it prints a thessleypam://enroll?... link and a 6-digit code
+    sudo thessley-pam enroll --user ubuntu --link
+
+    # 3. on the PC: paste the link; compare the 6-digit code on both screens
+    thessley-passkey enroll 'thessleypam://enroll?...' --protect tpm+pin --label "ubuntu-n100 backup"
+
+    # 4. on the server: both should be listed
+    sudo thessley-pam list --user ubuntu
+
+Approving a login with the desktop app instead of the phone: the ssh login prints a `Link: thessleypam://sudo?...`
+line (the type says `sudo` for ssh as well). On the PC, with the key protection you chose (PIN, TPM, security key):
+
+    thessley-passkey respond 'thessleypam://sudo?...' --approve
+
+or paste the link into the app's "Paste a link" field, or open it from the terminal (the app registers the
+`thessleypam:` scheme). You have 60 seconds. The approval grants the usual pass, tied to the approving device: it stops
+working if that device is removed or switched off on the server.
+
+Checked on 2026-10-16: with the pass ended and `ubuntu` logging in from 192.168.1.111, the desktop app approved
+(`approved by 'ubuntu-n100' ... for ubuntu (sshd, ssh)` in the log), the session opened, and the next login rode the pass.
+The phone was not involved.
+
+Things to know:
+
+- The desktop app keeps its key in the TPM, a PIN, a security key or any mix; whoever can use that can approve. Treat
+  the PC like the phone: screen lock, disk encryption, and do not enrol a machine you would not hand the phone to.
+- The approver and the ssh client are often the same PC. If that PC and the phone are lost together, no approver is
+  left. Enrol a second computer, or keep a break-glass path: console access, or an account outside `thessley-ssh`
+  that you only use to repair this.
+- Approval requests are answered over HTTPS on the LAN, so the PC has to reach the server on ports 47810-47819 while a
+  login waits. A second login while one is waiting uses the next port (47811, ...); this is why the link carries `p=`.
+- `show-link` is a setting, not a secret: the link works only for that one request and only with a signature from an
+  enrolled approver. Turn it off with `sudo thessley-pam show-link off` if you do not want it in the terminal.
+- To drop an approver: `sudo thessley-pam list --user ubuntu`, then `sudo thessley-pam remove --user ubuntu ID` (the pass
+  it approved ends with it; the admin window can also switch it off without removing it). Removing the app entry on the PC does not remove it on the server; do both.
+
 ## Daily use
 
     sudo thessley-pam passes                  who holds a pass and for how long (under a minute shows as "0 min")
