@@ -218,6 +218,22 @@ class PamPassTest(unittest.TestCase):
         self.assertTrue(self.said and self.said[0].startswith(pam.QR_MARKER))  # asked, pass or not
         t.join(10)
 
+    def test_marker_mode_prints_the_wait_line_after_the_qr_code(self):
+        """pam_thessley_phone.so (for sshd) reads the helper's text up to this line."""
+        box = {}
+        t = threading.Thread(target=lambda: box.setdefault("rc", pam.run(self.env, marker=True)), daemon=True)
+        t.start()
+        for _ in range(40):
+            if pam.WAIT_MARKER in self.said:
+                break
+            time.sleep(0.05)
+        self.assertEqual(self.said[-1], pam.WAIT_MARKER)           # the very last thing printed before it waits
+        self.assertTrue(self.said[0].startswith("Approve sshd"))   # the text comes first
+        t.join(10)
+        self.said.clear()
+        self.login(answer=None)
+        self.assertNotIn(pam.WAIT_MARKER, self.said)               # never without --marker
+
     def test_require_phone_refuses_users_without_one(self):
         store.remove_device(USER, self.device["credential_id"])
         self.assertEqual(pam.run(self.env), 0)                    # default: no phone, no phone step (like sudo)

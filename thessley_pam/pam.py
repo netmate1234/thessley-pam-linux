@@ -38,10 +38,11 @@ def _say(text: str) -> None:
     print(text, flush=True)
 
 
+WAIT_MARKER = "THESSLEY-WAIT"  # "the code is on screen; I am now waiting for the phone" (see pam-module/pam_thessley_phone.c)
 QR_MARKER = "THESSLEY-QR "  # the GNOME Shell extension draws the QR code from this line
 
 
-def run(env: dict, login: bool = False) -> int:
+def run(env: dict, login: bool = False, marker: bool = False) -> int:
     """sudo mode (default): a second step after the password; users without a phone pass through.
 
     login mode (--login, /etc/pam.d/gdm-thessley): the phone *instead of* the password, on the GNOME login
@@ -131,6 +132,10 @@ def run(env: dict, login: bool = False) -> int:
                     _say(line)
                 if os.path.exists(os.path.join(store.BASE, "show-link")):
                     _say(f"Link: {link}")
+            if marker:
+                # pam_thessley_phone.so (for sshd, which holds back plain text until PAM asks a question) reads
+                # everything up to this line, shows it together with a prompt, and then waits for the exit code.
+                _say(WAIT_MARKER)
             approved_in_time = done.wait(WAIT)
             time.sleep(0.5)  # let the phone receive its reply before the listener closes
     except OSError as e:
@@ -165,7 +170,7 @@ def run(env: dict, login: bool = False) -> int:
 
 def main() -> int:
     try:
-        return run(dict(os.environ), login="--login" in sys.argv[1:])
+        return run(dict(os.environ), login="--login" in sys.argv[1:], marker="--marker" in sys.argv[1:])
     except Exception as e:  # strict: any unexpected failure refuses
         _log(f"error: {e!r}", warn=True)
         print("Thessley Passkey: internal error. Refusing.", flush=True)
