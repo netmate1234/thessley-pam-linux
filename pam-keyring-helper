@@ -1,0 +1,12 @@
+#!/usr/bin/python3 -I
+# Called by pam_thessley_authtok.so (a PAM module running as root) right after the phone step of
+# /etc/pam.d/gdm-thessley: `pam-keyring-helper --keyring USER`. Writes the user's TPM-sealed login password to
+# stdout, for the module to hand to pam_gnome_keyring, or writes nothing and exits 1. Must live in a root-owned
+# directory: it runs as root and prints a password.
+import sys
+
+sys.path.insert(0, "/usr/local/lib/thessley-pam")
+
+from thessley_pam.keyring import helper_main
+
+sys.exit(helper_main(sys.argv[1:]))

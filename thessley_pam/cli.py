@@ -3,6 +3,9 @@
     sudo thessley-pam enroll [--user NAME] [--port N]
     sudo thessley-pam list   [--user NAME]
     sudo thessley-pam remove CREDENTIAL_ID [--user NAME]
+    sudo thessley-pam keyring-link   [--user NAME]   let a phone login unlock the GNOME keyring (see keyring.py)
+    sudo thessley-pam keyring-forget [--user NAME]
+    sudo thessley-pam keyring-status [--user NAME]
 """
 
 import argparse
@@ -165,6 +168,55 @@ def cmd_remove(args) -> int:
     return 1
 
 
+def cmd_keyring_link(args) -> int:
+    import getpass
+    from . import keyring
+    _need_root()
+    username = _target_user(args.user)
+    if not store.devices(username):
+        sys.exit(f"{username} has no enrolled phone yet: run  sudo thessley-pam enroll  first.")
+    print(f"This seals {username}'s login password in this computer's TPM, so that logging in with the phone can\n"
+          "unlock the GNOME keyring (saved Wi-Fi, browser and app passwords) as a typed password does.\n"
+          "It is released only after the phone approves a login, and only while this computer's Secure Boot state\n"
+          "is unchanged. If you change your password later, run this again.\n")
+    password = getpass.getpass(f"Login password of {username}: ")
+    try:
+        if not keyring.check_password(username, password):
+            sys.exit("That is not this account's password. Nothing was stored.")
+        keyring.seal(username, password)
+    except keyring.KeyringError as exc:
+        sys.exit(f"Could not seal it in the TPM: {exc}")
+    finally:
+        password = ""
+    print("Done. Log out and log in with the phone to try it.")
+    return 0
+
+
+def cmd_keyring_forget(args) -> int:
+    from . import keyring
+    _need_root()
+    username = _target_user(args.user)
+    print("Deleted." if keyring.forget(username) else "Nothing was stored.")
+    return 0
+
+
+def cmd_keyring_status(args) -> int:
+    from . import keyring
+    _need_root()
+    username = _target_user(args.user)
+    if not keyring.is_linked(username):
+        print(f"{username}: no sealed password. A phone login will not unlock the keyring.")
+        return 0
+    try:
+        keyring.unseal(username)
+        print(f"{username}: sealed and readable now. A phone login will unlock the keyring.")
+        return 0
+    except keyring.KeyringError as exc:
+        print(f"{username}: sealed, but cannot be opened now ({str(exc)[-120:]}).\n"
+              "Likely the Secure Boot state changed since it was sealed: run  sudo thessley-pam keyring-link  again.")
+        return 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="thessley-pam")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -179,6 +231,12 @@ def main(argv=None) -> int:
     rm.add_argument("credential_id")
     rm.add_argument("--user")
     rm.set_defaults(func=cmd_remove)
+    for name, fn, text in (("keyring-link", cmd_keyring_link, "seal the login password so a phone login unlocks the GNOME keyring"),
+                           ("keyring-forget", cmd_keyring_forget, "delete the sealed password"),
+                           ("keyring-status", cmd_keyring_status, "show whether the sealed password can be opened")):
+        k = sub.add_parser(name, help=text)
+        k.add_argument("--user")
+        k.set_defaults(func=fn)
     args = ap.parse_args(argv)
     try:
         return args.func(args)
