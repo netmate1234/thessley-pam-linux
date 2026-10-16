@@ -1,0 +1,12 @@
+#!/usr/bin/python3 -I
+# Runs as root under sudo, so -I (isolated mode): no user site-packages, no PYTHON* variables.
+# Imports from the installed copy, or from the source tree when run from a checkout during development.
+import os
+import sys
+
+here = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, "/usr/local/lib/thessley-pam" if here.startswith("/usr/local/") else here)
+
+from thessley_pam.cli import main
+
+sys.exit(main())
