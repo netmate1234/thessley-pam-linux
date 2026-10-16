@@ -264,14 +264,14 @@ class PamPassTest(unittest.TestCase):
         store.set_disabled(USER, self.device["credential_id"], True)
         self.assertEqual(pam.run(self.env), 1)
 
-    def test_the_text_link_is_shown_only_when_asked_for(self):
+    def test_the_text_link_is_shown_unless_switched_off(self):
         self.login(answer=None)
-        self.assertFalse(any(s.startswith("Link: ") for s in self.said))
+        self.assertTrue(any(s.startswith("Link: thessleypam://sudo?") for s in self.said))  # on by default
         os.makedirs(store.BASE, exist_ok=True)
-        open(os.path.join(store.BASE, "show-link"), "w").close()
+        open(os.path.join(store.BASE, "hide-link"), "w").close()
         self.said.clear()
         self.login(answer=None)
-        self.assertTrue(any(s.startswith("Link: thessleypam://sudo?") for s in self.said))
+        self.assertFalse(any(s.startswith("Link: ") for s in self.said))
 
 
 class ShowLinkCommandTest(unittest.TestCase):
@@ -287,13 +287,15 @@ class ShowLinkCommandTest(unittest.TestCase):
         self.addCleanup(setattr, os, "geteuid", self.real_geteuid)
 
     def test_on_and_off(self):
-        flag = os.path.join(store.BASE, "show-link")
+        hide = os.path.join(store.BASE, "hide-link")
         self.assertEqual(self.cli.main(["show-link"]), 0)
-        self.assertFalse(os.path.exists(flag))
-        self.assertEqual(self.cli.main(["show-link", "on"]), 0)
-        self.assertTrue(os.path.exists(flag))
+        self.assertTrue(store.show_link())                    # on by default
         self.assertEqual(self.cli.main(["show-link", "off"]), 0)
-        self.assertFalse(os.path.exists(flag))
+        self.assertTrue(os.path.exists(hide))
+        self.assertFalse(store.show_link())
+        self.assertEqual(self.cli.main(["show-link", "on"]), 0)
+        self.assertFalse(os.path.exists(hide))
+        self.assertTrue(store.show_link())
         with self.assertRaises(SystemExit):
             self.cli.main(["show-link", "maybe"])
 

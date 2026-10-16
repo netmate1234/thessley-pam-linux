@@ -108,16 +108,14 @@ phone app and counts as one more approver for the same user. Any number can be e
 
 Enrol the desktop app (do this from a login that already works; the server must be reachable from the PC over the LAN):
 
-    # 1. on the server: print approval links as text under the QR code (the desktop app cannot scan)
-    sudo thessley-pam show-link on
+    # 1. on the server: start the enrolment; it prints "Link: thessleypam://enroll?..." above the QR code, and a 6-digit
+    #    code (links are printed by default; "sudo thessley-pam show-link off" would hide the ones in approvals)
+    sudo thessley-pam enroll --user ubuntu
 
-    # 2. on the server: start the enrolment; it prints a thessleypam://enroll?... link and a 6-digit code
-    sudo thessley-pam enroll --user ubuntu --link
-
-    # 3. on the PC: paste the link; compare the 6-digit code on both screens
+    # 2. on the PC: paste the link; compare the 6-digit code on both screens
     thessley-passkey enroll 'thessleypam://enroll?...' --protect tpm+pin --label "ubuntu-n100 backup"
 
-    # 4. on the server: both should be listed
+    # 3. on the server: both should be listed
     sudo thessley-pam list --user ubuntu
 
 Approving a login with the desktop app instead of the phone: the ssh login prints a `Link: thessleypam://sudo?...`
@@ -142,8 +140,10 @@ Things to know:
   that you only use to repair this.
 - Approval requests are answered over HTTPS on the LAN, so the PC has to reach the server on ports 47810-47819 while a
   login waits. A second login while one is waiting uses the next port (47811, ...); this is why the link carries `p=`.
-- `show-link` is a setting, not a secret: the link works only for that one request and only with a signature from an
-  enrolled approver. Turn it off with `sudo thessley-pam show-link off` if you do not want it in the terminal.
+- The text link is printed by default (`Link: thessleypam://...`, above the QR code), for enrolment and for every
+  approval, so a phone or computer that cannot scan the screen can still approve. It is not a secret: it works only for
+  that one request and only with a signature from an enrolled approver. `sudo thessley-pam show-link off` hides it in
+  approvals (enrolment always prints it).
 - To drop an approver: `sudo thessley-pam list --user ubuntu`, then `sudo thessley-pam remove --user ubuntu ID` (the pass
   it approved ends with it; the admin window can also switch it off without removing it). Removing the app entry on the PC does not remove it on the server; do both.
 

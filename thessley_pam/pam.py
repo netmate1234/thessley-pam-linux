@@ -155,7 +155,7 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
                 qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "2", link],
                                     check=True, capture_output=True, text=True).stdout
                 _say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
-                if os.path.exists(os.path.join(store.BASE, "show-link")):
+                if store.show_link():
                     _say(f"Link: {link}")  # above the QR code: it stays in view when the code scrolls the screen
                 for line in qr.splitlines():
                     _say(line)

@@ -91,6 +91,16 @@ class EnrollTest(unittest.TestCase):
         q = {k: v[0] for k, v in parse_qs(urlparse(self.links[0]).query).items()}
         return t, q
 
+    def test_the_link_is_always_printed_as_text(self):
+        printed = []
+        cli.print = lambda *a, **k: printed.append(" ".join(str(x) for x in a))  # shadows the builtin in the cli module
+        self.addCleanup(lambda: delattr(cli, "print"))
+        t, q = self.start()  # no --link option
+        phone = FakePhone()
+        phone.post(q, phone.enroll_body(q))
+        t.join(10)
+        self.assertTrue(any(line.startswith("Link: thessleypam://enroll?") for line in printed), printed)
+
     def test_happy_path_stores_key(self):
         t, q = self.start()
         phone = FakePhone()

@@ -31,6 +31,12 @@ def _path(username: str) -> str:
     return os.path.join(USERS, f"{username}.json")
 
 
+def show_link() -> bool:
+    """Print each request's link as text, under or above the QR code? On unless switched off (thessley-pam show-link
+    off): a person who cannot scan (an ssh app on the phone, a remote desktop) needs the text."""
+    return not os.path.exists(os.path.join(BASE, "hide-link"))
+
+
 def ensure_dirs() -> None:
     for d in (BASE, USERS):
         os.makedirs(d, mode=0o700, exist_ok=True)

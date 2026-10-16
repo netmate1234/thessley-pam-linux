@@ -1,11 +1,11 @@
 """thessley-pam: add, list and remove the phones that may approve logins on this computer.
 
-    sudo thessley-pam enroll [--user NAME] [--port N] [--link]   (--link also prints the link, for the desktop app)
+    sudo thessley-pam enroll [--user NAME] [--port N]            (prints the link as text above the QR code; --link is accepted, no longer needed)
     sudo thessley-pam list   [--user NAME]
     sudo thessley-pam remove CREDENTIAL_ID [--user NAME]
     sudo thessley-pam grace   [--service S --hours H]   ask the phone once per H hours for service S (0 = always ask)
     sudo thessley-pam require [--service S on|off]       refuse users with no phone for service S
-    sudo thessley-pam show-link [on|off]             also print each approval's link as text (desktop app)
+    sudo thessley-pam show-link [on|off]             print each approval's link as text (on by default)
     sudo thessley-pam enroll-me [--link]            a user adds a phone for their own account (see install-selfenroll.sh)
     sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd phone needs the 1st to approve
     sudo thessley-pam passes                            who holds a phone pass right now
@@ -123,9 +123,8 @@ def cmd_enroll(args) -> int:
             "m": mid, "hn": host, "u": username,
         })
         print(f"\nAdd a phone that may approve logins for '{username}' on {host}.\n")
+        print(f"Link: {link}\n")  # always: for the desktop app, or a phone that cannot scan this screen
         _show_qr(link)
-        if getattr(args, "link", False):
-            print(f"Link: {link}\n")  # for the Thessley Passkey desktop app on a computer that cannot scan the code
         print(f"In Thessley Passkey: Scan QR code. Valid for {ENROLL_WAIT // 60} minutes. Ctrl+C to cancel.",
               flush=True)
 
@@ -330,23 +329,27 @@ def cmd_require(args) -> int:
 
 def cmd_show_link(args) -> int:
     _need_root()
-    flag = os.path.join(store.BASE, "show-link")
+    hide = os.path.join(store.BASE, "hide-link")
+    old = os.path.join(store.BASE, "show-link")  # the earlier on-switch: no longer needed, links are shown by default
     if args.state is None:
-        print("Approval requests also print their link as text." if os.path.exists(flag) else "Approval requests show only the QR code.")
+        print("Approval requests also print their link as text." if store.show_link() else "Approval requests show only the QR code.")
         return 0
     if args.state not in ("on", "off"):
         sys.exit("Say on or off.")
     store.ensure_dirs()
+    if os.path.exists(old):
+        os.unlink(old)
     if args.state == "on":
-        open(flag, "w").close()
-        print("Every sudo or ssh approval request now also prints a line \"Link: thessleypam://...\", which the Thessley Passkey\n"
-              "desktop app can approve (thessley-passkey respond LINK). The login screen is not affected.")
-    else:
         try:
-            os.unlink(flag)
+            os.unlink(hide)
         except FileNotFoundError:
             pass
-        print("Approval requests show only the QR code again.")
+        print("Every sudo, ssh or device approval request also prints a line \"Link: thessleypam://...\", which the Thessley\n"
+              "Passkey desktop app can approve (thessley-passkey respond LINK) and the phone app can paste. On by default.\n"
+              "The login screen is not affected.")
+    else:
+        open(hide, "w").close()
+        print("Approval requests show only the QR code now. (Enrolment always prints its link.)")
     return 0
 
 
