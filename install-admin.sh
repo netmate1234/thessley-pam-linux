@@ -21,6 +21,7 @@ lib=/usr/local/lib/thessley-pam
 for f in admin_helper.py admin_gui.py keyring.py cli.py store.py pam.py; do
     install -o root -g root -m 0644 "$src/thessley_pam/$f" "$lib/thessley_pam/$f"
 done
+install -o root -g root -m 0644 "$src/thessley_pam/logo.png" "$lib/thessley_pam/logo.png"
 install -o root -g root -m 0755 "$src/admin-helper" "$lib/admin-helper"
 install -o root -g root -m 0755 "$src/thessley-pam-admin" /usr/local/bin/thessley-pam-admin
 install -o root -g root -m 0644 "$src/packaging/org.thessley.pam.policy" /usr/share/polkit-1/actions/org.thessley.pam.policy

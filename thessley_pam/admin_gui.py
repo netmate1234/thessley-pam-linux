@@ -24,7 +24,8 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
 HELPER = "/usr/local/lib/thessley-pam/admin-helper"
 UUID = "thessley-passkey-login@eagleeye-intelligence.com"
@@ -197,6 +198,22 @@ def open_in_terminal(command: str) -> bool:
     return False
 
 
+LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")  # installed next to this file
+LOGO_SIZE = 28
+
+
+def logo_widget():
+    """The logo for the top right corner of the header bar, or None (no file, unreadable): never a reason to fail."""
+    try:
+        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(LOGO, LOGO_SIZE, LOGO_SIZE, True)
+        image = Gtk.Image.new_from_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
+        image.set_pixel_size(LOGO_SIZE)
+        image.set_tooltip_text("Thessley Login")
+        return image
+    except (GLib.Error, OSError):
+        return None
+
+
 class AdminWindow(Adw.ApplicationWindow):
     def __init__(self, app, backend=None, status=local_status, problem=polkit_problem, lock_switch=set_lock_qr):
         super().__init__(application=app, title="Thessley Login", default_width=680, default_height=820)
@@ -211,6 +228,9 @@ class AdminWindow(Adw.ApplicationWindow):
         header.pack_start(add)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Reload")
         refresh.connect("clicked", lambda *_: self.reload(privileged=True))
+        logo = logo_widget()
+        if logo is not None:
+            header.pack_end(logo)  # first packed = right-most: the top right corner
         header.pack_end(refresh)
         view.add_top_bar(header)
         self.page = Adw.PreferencesPage()
