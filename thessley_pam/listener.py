@@ -4,7 +4,9 @@ Each run makes a throwaway self-signed certificate; its SHA-256 goes into the QR
 exactly that certificate (PinnedClient.kt). Nothing about the TLS key is kept after the run.
 """
 
+import contextlib
 import datetime
+import errno
 import hashlib
 import ipaddress
 import json
@@ -51,6 +53,29 @@ def _make_cert(ip: str, tmp: str) -> tuple[str, str, str]:
         f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                   serialization.NoEncryption()))
     return cert_path, key_path, hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
+
+
+@contextlib.contextmanager
+def listening(ip: str, routes: dict, first_port: int, tries: int = 10):
+    """A listener on first_port, or on the next free port when another request is still waiting for its answer.
+    The port travels in the link, so the phone and the desktop app go wherever it ended up."""
+    lst = None
+    for port in range(first_port, first_port + tries):
+        candidate = Listener(ip, port, routes)
+        try:
+            candidate.__enter__()
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise
+            continue
+        lst = candidate
+        break
+    if lst is None:
+        raise OSError(errno.EADDRINUSE, os.strerror(errno.EADDRINUSE))
+    try:
+        yield lst
+    finally:
+        lst.__exit__(None, None, None)
 
 
 class Listener:

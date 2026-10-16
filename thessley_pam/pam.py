@@ -11,8 +11,6 @@ A user with no enrolled phone is not affected (exit 0), so the line can't lock o
 Whatever is printed on stdout is shown to the person by sudo (pam_exec's stdout option), line by line.
 """
 
-import contextlib
-import errno
 import hmac
 import os
 import re
@@ -24,8 +22,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from . import grants, machine, protocol, store
-from .listener import Listener
+from . import grants, listener, machine, protocol, store
 
 PORT = 47810
 PORT_TRIES = 10  # logins at the same time each need a listener; the next free port from PORT is used (see _listening)
@@ -51,27 +48,8 @@ def _display_fields(service: str, rhost: str) -> dict:
     return out
 
 
-@contextlib.contextmanager
 def _listening(ip: str, routes: dict):
-    """A listener on PORT, or on the next free port when another login is still waiting for its approval.
-    The port travels in the link, so the phone and the desktop app go wherever it ended up."""
-    lst = None
-    for port in range(PORT, PORT + PORT_TRIES):
-        candidate = Listener(ip, port, routes)
-        try:
-            candidate.__enter__()
-        except OSError as e:
-            if e.errno != errno.EADDRINUSE:
-                raise
-            continue
-        lst = candidate
-        break
-    if lst is None:
-        raise OSError(errno.EADDRINUSE, os.strerror(errno.EADDRINUSE))
-    try:
-        yield lst
-    finally:
-        lst.__exit__(None, None, None)
+    return listener.listening(ip, routes, PORT, PORT_TRIES)
 
 
 def _say(text: str) -> None:

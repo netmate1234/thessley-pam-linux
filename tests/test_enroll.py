@@ -140,5 +140,91 @@ class EnrollTest(unittest.TestCase):
         self.assertRegex(code, r"^\d{3} \d{3}$")
 
 
+class SelfEnrollTest(EnrollTest):
+    """A normal user adds their own FIRST phone through sudo (cmd_enroll_me); the account is SUDO_USER, never chosen."""
+
+    def setUp(self):
+        super().setUp()
+        from thessley_pam import grants
+        self.grants = grants
+        self.saved_env = os.environ.get("SUDO_USER")
+        os.environ["SUDO_USER"] = self.user
+
+    def tearDown(self):
+        if self.saved_env is None:
+            os.environ.pop("SUDO_USER", None)
+        else:
+            os.environ["SUDO_USER"] = self.saved_env
+        super().tearDown()
+
+    def start_me(self):
+        t = threading.Thread(target=lambda: setattr(self, "result", cli.cmd_enroll_me(types.SimpleNamespace(link=False))),
+                             daemon=True)
+        t.start()
+        for _ in range(50):
+            if self.links:
+                break
+            time.sleep(0.1)
+        self.assertTrue(self.links, "the enrolment never started")
+        return t, {k: v[0] for k, v in parse_qs(urlparse(self.links[0]).query).items()}
+
+    def test_first_phone_for_my_own_account(self):
+        t, q = self.start_me()
+        self.assertEqual(q["u"], self.user)
+        phone = FakePhone()
+        self.assertEqual(phone.post(q, phone.enroll_body(q))[1]["result"], "ok")
+        t.join(10)
+        self.assertEqual(self.result, 0)
+        self.assertEqual([d["public_key"] for d in store.devices(self.user)], [phone.spki])
+
+    def test_nobody_can_name_another_account(self):
+        t, q = self.start_me()
+        phone = FakePhone()
+        self.assertEqual(phone.post(q, phone.enroll_body(q, user="root"))[0], 400)  # signature for another account
+        self.assertEqual(q["u"], self.user)
+        phone.post(q, phone.enroll_body(q))
+        t.join(10)
+
+    def test_the_command_takes_no_user_option(self):
+        with self.assertRaises(SystemExit):
+            cli.main(["enroll-me", "--user", "root"])
+
+    def test_refused_cases(self):
+        problem = cli.self_enroll_problem
+        self.assertIsNone(problem(self.user))
+        self.assertIn("normal user", problem(None))
+        self.assertIn("normal user", problem("root"))
+        self.assertIn("No such user", problem("no-such-user-x"))
+        # A second phone needs an administrator.
+        device = store.add_device(self.user, FakePhone().spki, "Existing", [])
+        self.assertIn("already have a phone", problem(self.user))
+        # All phones switched off (a lost phone): administrator only, so the first-come slot does not reopen.
+        store.set_disabled(self.user, device["credential_id"], True)
+        self.assertIn("switched off here", problem(self.user))
+
+    def test_switched_off_by_an_administrator(self):
+        self.grants.set_self_enroll(False)
+        self.assertIn("switched off on this computer", cli.self_enroll_problem(self.user))
+        self.assertEqual(cli.cmd_enroll_me(types.SimpleNamespace(link=False)), 1)
+        self.assertEqual(self.links, [])
+        self.grants.set_self_enroll(True)
+        self.assertIsNone(cli.self_enroll_problem(self.user))
+
+    def test_no_sudo_user_means_no_enrolment(self):
+        os.environ.pop("SUDO_USER", None)
+        self.assertEqual(cli.cmd_enroll_me(types.SimpleNamespace(link=False)), 1)
+        self.assertEqual(self.links, [])
+
+    def test_a_waiting_login_does_not_block_enrolment(self):
+        """The port is taken by another request: the enrolment uses the next one."""
+        from thessley_pam.listener import Listener
+        with Listener("127.0.0.1", cli.DEFAULT_PORT, {}):
+            t, q = self.start_me()
+            self.assertEqual(int(q["p"]), cli.DEFAULT_PORT + 1)
+            phone = FakePhone()
+            phone.post(q, phone.enroll_body(q))
+            t.join(10)
+
+
 if __name__ == "__main__":
     unittest.main()

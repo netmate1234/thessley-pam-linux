@@ -147,6 +147,27 @@ Things to know:
 - To drop an approver: `sudo thessley-pam list --user ubuntu`, then `sudo thessley-pam remove --user ubuntu ID` (the pass
   it approved ends with it; the admin window can also switch it off without removing it). Removing the app entry on the PC does not remove it on the server; do both.
 
+## A user adds their own phone (no administrator)
+
+An administrator adds phones with `sudo thessley-pam enroll --user NAME`. A normal user, who has no sudo rights, can add
+their **own first phone** instead, the way the Windows version allows it:
+
+    sudo ./install-selfenroll.sh            once, as an administrator: one file in /etc/sudoers.d
+    sudo thessley-pam enroll-me             then, as that user, in a terminal (add --link for the desktop app)
+
+It shows the same QR code and 6-digit code, and the user types `yes`. How it stays safe:
+
+- **The account is not chosen by the user.** The command takes it from sudo (`SUDO_USER`) and has no `--user` option, so
+  nobody can add a phone for someone else. The sudoers line allows exactly `enroll-me` and `enroll-me --link`, nothing else.
+- **Only the first phone.** An account that already has a phone, or whose phones are all switched off (a lost phone),
+  is refused: those need an administrator (`sudo thessley-pam enroll --user NAME`).
+- **Trade-off:** until a phone is enrolled, whoever can run a session as that account (it takes its password) can enrol
+  their own phone first. If you do not want that, turn it off and let only administrators add phones:
+
+      sudo thessley-pam self-enroll off          (on again: self-enroll on; no argument shows the setting)
+
+- Undo the sudoers file with `sudo ./uninstall-selfenroll.sh`.
+
 ## Daily use
 
     sudo thessley-pam passes                  who holds a pass and for how long (under a minute shows as "0 min")

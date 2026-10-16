@@ -6,6 +6,8 @@
     sudo thessley-pam grace   [--service S --hours H]   ask the phone once per H hours for service S (0 = always ask)
     sudo thessley-pam require [--service S on|off]       refuse users with no phone for service S
     sudo thessley-pam show-link [on|off]             also print each approval's link as text (desktop app)
+    sudo thessley-pam enroll-me [--link]            a user adds their FIRST phone for their own account (see install-selfenroll.sh)
+    sudo thessley-pam self-enroll [on|off]          may users do that (on by default)
     sudo thessley-pam passes                            who holds a phone pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a phone login unlock the GNOME keyring (see keyring.py)
@@ -25,8 +27,7 @@ import sys
 import threading
 from urllib.parse import urlencode
 
-from . import machine, protocol, store
-from .listener import Listener
+from . import grants, listener, machine, protocol, store
 
 DEFAULT_PORT = 47810
 ENROLL_WAIT = 180   # seconds the QR code stays valid
@@ -115,9 +116,9 @@ def cmd_enroll(args) -> int:
                      "hostname": host}
 
     path = f"/thessley-pam/v1/enroll/{request_id}/respond"
-    with Listener(ip, args.port, {path: respond}) as lst:
+    with listener.listening(ip, {path: respond}, args.port) as lst:
         link = "thessleypam://enroll?" + urlencode({
-            "h": ip, "p": args.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
+            "h": ip, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
             "m": mid, "hn": host, "u": username,
         })
         print(f"\nAdd a phone that may approve logins for '{username}' on {host}.\n")
@@ -149,6 +150,53 @@ def cmd_enroll(args) -> int:
         return 0
     print("Not added.")
     return 1
+
+
+def self_enroll_problem(username: str | None) -> str | None:
+    """Why this account may not enrol a phone itself, or None if it may. Only ever the FIRST phone of an account:
+    anyone who can run a session as that account (it takes its password) could otherwise add one, so a second phone,
+    or a replacement after the phones were switched off, needs an administrator (sudo thessley-pam enroll --user NAME)."""
+    if not username or username == "root":
+        return "This is for a normal user, run through sudo. An administrator uses: sudo thessley-pam enroll --user NAME"
+    try:
+        pwd.getpwnam(username)
+    except KeyError:
+        return f"No such user: {username}"
+    if not grants.self_enroll_allowed():
+        return "Adding a phone yourself is switched off on this computer. Ask an administrator."
+    devices = store.devices(username)
+    if any(not d.get("disabled") for d in devices):
+        return ("You already have a phone for this account. Adding another needs an administrator: "
+                f"sudo thessley-pam enroll --user {username}")
+    if devices:
+        return "Your phones are switched off here, so a new one needs an administrator."
+    return None
+
+
+def cmd_enroll_me(args) -> int:
+    """For a normal user, through sudo (install-selfenroll.sh allows exactly this command). The account is whoever
+    sudo says is calling (SUDO_USER, which the caller cannot choose): nobody can add a phone for another account."""
+    _need_root()
+    username = os.environ.get("SUDO_USER")
+    problem = self_enroll_problem(username)
+    if problem:
+        print(problem)
+        return 1
+    import syslog
+    syslog.openlog("thessley-pam", syslog.LOG_PID, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_INFO, f"self-enrol started by {username!r}")
+    return cmd_enroll(argparse.Namespace(user=username, port=DEFAULT_PORT, link=getattr(args, "link", False)))
+
+
+def cmd_self_enroll(args) -> int:
+    _need_root()
+    if args.state is None:
+        print("Users may add their own first phone: " + ("yes" if grants.self_enroll_allowed() else "no"))
+        return 0
+    grants.set_self_enroll(args.state == "on")
+    print("Users may now add their own first phone." if args.state == "on"
+          else "Only administrators can add phones now.")
+    return 0
 
 
 def cmd_list(args) -> int:
@@ -317,6 +365,12 @@ def main(argv=None) -> int:
     e.add_argument("--port", type=int, default=DEFAULT_PORT)
     e.add_argument("--link", action="store_true", help="also print the link as text (for the desktop app)")
     e.set_defaults(func=cmd_enroll)
+    em = sub.add_parser("enroll-me", help="add your own first phone (run through sudo by a normal user)")
+    em.add_argument("--link", action="store_true", help="also print the link as text (for the desktop app)")
+    em.set_defaults(func=cmd_enroll_me)
+    se = sub.add_parser("self-enroll", help="allow or forbid users adding their own first phone")
+    se.add_argument("state", nargs="?", choices=("on", "off"))
+    se.set_defaults(func=cmd_self_enroll)
     ls = sub.add_parser("list", help="list a user's phones")
     ls.add_argument("--user")
     ls.set_defaults(func=cmd_list)

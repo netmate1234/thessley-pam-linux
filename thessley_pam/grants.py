@@ -65,6 +65,24 @@ def requires_phone(service: str) -> bool:
         return False
 
 
+def self_enroll_allowed() -> bool:
+    """May a user with no phone enrol their first one themselves (thessley-pam enroll-me)? On unless switched off."""
+    try:
+        return bool(_load_config().get("self_enroll", True))
+    except (TypeError, AttributeError):
+        return True
+
+
+def set_self_enroll(on: bool) -> None:
+    store.ensure_dirs()
+    data = _load_config()
+    if on:
+        data.pop("self_enroll", None)  # the default
+    else:
+        data["self_enroll"] = False
+    _atomic_write(_config_path(), data, store.BASE)
+
+
 def set_require(service: str, on: bool) -> None:
     if not service or any(c in service for c in "/ \t\n\0") or service.startswith("."):
         raise ValueError("bad service name")
