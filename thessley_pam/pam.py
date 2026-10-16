@@ -26,7 +26,7 @@ from . import grants, listener, machine, protocol, store
 
 PORT = 47810
 PORT_TRIES = 10  # logins at the same time each need a listener; the next free port from PORT is used (see _listening)
-WAIT = 60  # seconds to approve on the phone
+WAIT = 90  # seconds to approve on the phone (unlock it, find the app; the ssh module's own limit is longer, see TOTAL_WAIT_S)
 
 OK, REFUSED = 0, 1
 

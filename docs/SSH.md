@@ -124,7 +124,7 @@ line (the type says `sudo` for ssh as well). On the PC, with the key protection 
     thessley-passkey respond 'thessleypam://sudo?...' --approve
 
 or paste the link into the app's "Paste a link" field, or open it from the terminal (the app registers the
-`thessleypam:` scheme). You have 60 seconds. The approval grants the usual pass, tied to the approving device: it stops
+`thessleypam:` scheme). You have 90 seconds. The approval grants the usual pass, tied to the approving device: it stops
 working if that device is removed or switched off on the server.
 
 Checked on 2026-10-16: with the pass ended and `ubuntu` logging in from 192.168.1.111, the desktop app approved

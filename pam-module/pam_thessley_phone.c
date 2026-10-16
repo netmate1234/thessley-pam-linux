@@ -41,7 +41,7 @@
 #define HELPER "/usr/local/lib/thessley-pam/pam-helper"
 #define MARKER "THESSLEY-WAIT"
 #define MAX_TEXT 16384
-#define TOTAL_WAIT_S 100
+#define TOTAL_WAIT_S 130  /* the helper's approval wait (90 s) plus the time to read its text, with margin */
 #define NOTE_DIR "/run/thessley-pam/notes"
 #define NOTE_MAX_AGE_S 120
 
