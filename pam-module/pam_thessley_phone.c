@@ -9,11 +9,22 @@
  * helper to finish. Exit 0 from the helper means approved (or a still valid pass), anything else refuses.
  * If the helper finishes before it printed the wait line (a valid pass, a refusal, no phone), its text is shown as
  * plain information and the exit code decides, with no question asked.
+ *
+ * One exception, for a login that was let through on a valid pass: sshd shows PAM text from the auth step and then
+ * shows it again when it opens a shell, so the note ("approved earlier, valid for ...") would appear twice. Instead
+ * the note is left in a root-only file and printed by the session step (pam_sm_open_session below), which sshd
+ * shows once, and only for a shell login. The auth step runs in a forked child of sshd, so the note cannot travel
+ * inside the PAM handle; a file named after user and client address carries it.
+ *
+ *   session  optional  pam_thessley_phone.so
  */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <ctype.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +39,8 @@
 #define MARKER "THESSLEY-WAIT"
 #define MAX_TEXT 16384
 #define TOTAL_WAIT_S 100
+#define NOTE_DIR "/run/thessley-pam/notes"
+#define NOTE_MAX_AGE_S 120
 
 static int safe(const char *s)
 {
@@ -55,6 +68,53 @@ static long now_ms(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+
+/* The file that carries the pass note from the auth step to the session step; "" if the names are not plain. */
+static int note_path(pam_handle_t *pamh, char *out, size_t n)
+{
+    const char *user = NULL;
+    if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !safe(user))
+        return 0;
+    const char *rhost = item(pamh, PAM_RHOST);
+    if (!*rhost)
+        rhost = "-";
+    for (const char *p = user; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '.' && *p != '_' && *p != '-')
+            return 0;
+    for (const char *p = rhost; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '.' && *p != ':' && *p != '_' && *p != '-')
+            return 0;
+    int w = snprintf(out, n, NOTE_DIR "/%s@%s", user, rhost);
+    return w > 0 && (size_t)w < n;
+}
+
+static int write_note(pam_handle_t *pamh, const char *text)
+{
+    char path[512];
+    if (!note_path(pamh, path, sizeof path))
+        return 0;
+    (void)mkdir("/run/thessley-pam", 0700);
+    (void)mkdir(NOTE_DIR, 0700);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return 0;
+    size_t len = strlen(text), done = 0;
+    while (done < len) {
+        ssize_t w = write(fd, text + done, len - done);
+        if (w < 0 && errno == EINTR)
+            continue;
+        if (w <= 0)
+            break;
+        done += (size_t)w;
+    }
+    close(fd);
+    if (done != len) {
+        unlink(path);
+        return 0;
+    }
+    return 1;
 }
 
 PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
@@ -131,8 +191,6 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
         if (reply) {
             free(reply);
         }
-    } else if (len > 0) {
-        pam_info(pamh, "%s", text);
     }
 
     /* Phase 2: the helper's verdict. */
@@ -152,7 +210,45 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
         nanosleep(&nap, NULL);
     }
     close(fds[0]);
-    return (done && WIFEXITED(status) && WEXITSTATUS(status) == 0) ? PAM_SUCCESS : PAM_AUTH_ERR;
+    int ok = done && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (!marker_seen && len > 0) {
+        /* A pass was used: leave the note for the session step. Anything else (a refusal, no phone): say it now. */
+        if (!(ok && write_note(pamh, text)))
+            pam_info(pamh, "%s", text);
+    }
+    return ok ? PAM_SUCCESS : PAM_AUTH_ERR;
+}
+
+PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
+{
+    (void)flags; (void)argc; (void)argv;
+    char path[512];
+    if (!note_path(pamh, path, sizeof path))
+        return PAM_SUCCESS;
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+        return PAM_SUCCESS;
+    char buf[1024];
+    struct stat st;
+    ssize_t n = -1;
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == 0 && time(NULL) - st.st_mtime <= NOTE_MAX_AGE_S)
+        n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    unlink(path);  /* shown at most once, stale or not */
+    if (n > 0) {
+        buf[n] = '\0';
+        while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
+            buf[--n] = '\0';
+        if (n > 0)
+            pam_info(pamh, "%s", buf);
+    }
+    return PAM_SUCCESS;
+}
+
+PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
+{
+    (void)pamh; (void)flags; (void)argc; (void)argv;
+    return PAM_SUCCESS;
 }
 
 PAM_EXTERN int pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)

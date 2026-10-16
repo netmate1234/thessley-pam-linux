@@ -103,8 +103,7 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
         except OSError:
             held = None
         if held:
-            if not marker:  # sshd shows PAM text a second time when it opens a shell, so the ssh module stays quiet here
-                _say(f"Thessley Passkey: approved earlier, valid for another {grants.remaining(held)}.")
+            _say(f"Thessley Passkey: approved earlier, valid for another {grants.remaining(held)}.")
             _log(f"pass used for {username} ({service}, from {rhost}, {grants.remaining(held)} left)")
             return OK
 

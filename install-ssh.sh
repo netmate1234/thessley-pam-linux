@@ -19,6 +19,8 @@
 #   /etc/pam.d/sshd (before "@include common-auth"):
 #       auth  [success=ignore default=1]  pam_succeed_if.so quiet user ingroup thessley-ssh
 #       auth  [success=done default=die]  pam_thessley_phone.so
+#   and, before "@include common-session" (optional; prints the "approved earlier" note once for shell logins):
+#       session  optional  pam_thessley_phone.so
 #
 # then: sudo sshd -t && sudo systemctl reload ssh
 set -eu

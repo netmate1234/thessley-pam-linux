@@ -50,6 +50,11 @@ named, so there is no separate PAM service for a test instance: use `Match` bloc
     auth  [success=ignore default=1]  pam_succeed_if.so quiet user ingroup thessley-ssh
     auth  [success=done default=die]  pam_thessley_phone.so
 
+and, before `@include common-session` (optional: it only prints the "approved earlier" note once for shell logins; without it
+that note is simply not shown):
+
+    session  optional  pam_thessley_phone.so
+
 Everyone not in the group keeps the old rules: the two PAM lines are skipped for them, and password and
 keyboard-interactive logins stay switched off by `sshd_config` as before.
 
@@ -145,8 +150,9 @@ Things to know:
 
 Logging in: the key is checked first (a wrong key never reaches the phone), then the QR code appears; scan it with
 the app, approve with your fingerprint, press Enter. The next logins from that address within the window go straight
-in, silently (the helper used to print "approved ... earlier", but sshd shows PAM text twice when it opens a shell, so the ssh
-module says nothing; `sudo journalctl -t thessley-pam` records "pass used"). sudo still prints the notice once.
+in. A shell login shows "approved earlier, valid for another ..." once; `ssh host command` shows nothing. (sshd shows
+PAM text from the auth step again when it opens a shell, so the module leaves the note in `/run/thessley-pam/notes` and
+prints it in the session step instead; `sudo journalctl -t thessley-pam` records every "pass used".)
 
 ## Scripts and other non-interactive clients
 
