@@ -89,6 +89,25 @@ Logging in: the key is checked first (a wrong key never reaches the phone), then
 the app, approve with your fingerprint, press Enter. The next logins from that address within the window go straight
 in (the notice "approved on your phone earlier" may show twice: that is sshd).
 
+## Scripts and other non-interactive clients
+
+A script (or an AI agent such as Claude) that connects without a terminal behaves like this:
+
+- **Without a valid pass** the connection is refused. With `BatchMode=yes` it is refused at once ("Permission denied
+  (keyboard-interactive)"); without it, the client has no way to press Enter, so it waits until the request times out
+  (about 2 minutes) and is then refused. Either way, the key alone never gets in.
+- **With a valid pass** (someone approved from the same address) a client **without** `BatchMode=yes` gets in, with
+  no terminal. A client with `BatchMode=yes` is refused even then, because the ssh client does not do
+  keyboard-interactive in batch mode. So unattended scripts that must run from a gated address should use
+  `-o BatchMode=no` (and `-o ConnectTimeout=...`), or run from an exempted address (key only).
+- A pass belongs to the **address**, not to the person or the session: after one person approves, any process on that
+  machine can use the key for the rest of the window. That is the point (key + phone once), and the limit.
+
+Tried with Claude as the client on 2026-10-16: with no pass, Claude's login stopped at "Approve on your phone, then
+press Enter"; the human scanned the QR code and approved, Claude pressed Enter, the session opened and its commands
+ran; a second login inside the window needed no phone (without `BatchMode=yes`); after `end-pass` the same login was
+refused again.
+
 ## Testing without a second computer
 
 A second address on the same network card makes the server see "another place":
@@ -118,4 +137,5 @@ was run on a throwaway user before any real account was added.
 | `Permission denied (keyboard-interactive)` right after the key | The phone did not answer in time, was denied, or the user has no enrolled phone while `require` is on |
 | The phone is not asked although it should be | A valid pass exists (`thessley-pam passes`), or the connection comes from an exempted address |
 | The phone is asked every time | `grace` is 0 for `sshd`, or each login comes from a different address |
+| `Permission denied (keyboard-interactive)` although a pass exists | The client uses `BatchMode=yes`; use `-o BatchMode=no` |
 | Logs | `sudo journalctl -t thessley-pam` and `sudo journalctl -u ssh` |
