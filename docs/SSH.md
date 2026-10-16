@@ -145,7 +145,8 @@ Things to know:
 
 Logging in: the key is checked first (a wrong key never reaches the phone), then the QR code appears; scan it with
 the app, approve with your fingerprint, press Enter. The next logins from that address within the window go straight
-in (the notice "approved on your phone earlier" may show twice: that is sshd).
+in, silently (the helper used to print "approved ... earlier", but sshd shows PAM text twice when it opens a shell, so the ssh
+module says nothing; `sudo journalctl -t thessley-pam` records "pass used"). sudo still prints the notice once.
 
 ## Scripts and other non-interactive clients
 

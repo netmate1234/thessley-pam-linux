@@ -153,8 +153,15 @@ class PamPassTest(unittest.TestCase):
         self.assertEqual(self.login(), (0, True))
         self.assertTrue(any("next login from 192.168.1.50 needs no phone for 4 h" in s for s in self.said))
         self.assertEqual(self.login(answer=None), (0, False))
-        self.assertTrue(any("approved on your phone earlier" in s for s in self.said))
+        self.assertTrue(any("approved earlier, valid for another" in s for s in self.said))
         self.assertEqual(self.login(answer=None), (0, False))
+
+    def test_ssh_module_stays_quiet_when_a_pass_is_used(self):
+        """sshd prints PAM text twice for a shell login, so the --marker (ssh) mode says nothing on the pass path."""
+        self.login()
+        self.said.clear()
+        self.assertEqual(pam.run(self.env, marker=True), 0)
+        self.assertFalse(any("approved earlier" in s for s in self.said))
 
     def test_a_different_address_asks_again(self):
         self.login()
