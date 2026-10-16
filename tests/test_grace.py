@@ -261,5 +261,29 @@ class PamPassTest(unittest.TestCase):
         self.assertTrue(any(s.startswith("Link: thessleypam://sudo?") for s in self.said))
 
 
+class ShowLinkCommandTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        store.BASE = os.path.join(self.tmp.name, "etc")
+        store.USERS = os.path.join(store.BASE, "users")
+        from thessley_pam import cli
+        self.cli = cli
+        self.real_geteuid = os.geteuid
+        os.geteuid = lambda: 0  # the commands insist on root; the files are in a temporary directory here
+        self.addCleanup(setattr, os, "geteuid", self.real_geteuid)
+
+    def test_on_and_off(self):
+        flag = os.path.join(store.BASE, "show-link")
+        self.assertEqual(self.cli.main(["show-link"]), 0)
+        self.assertFalse(os.path.exists(flag))
+        self.assertEqual(self.cli.main(["show-link", "on"]), 0)
+        self.assertTrue(os.path.exists(flag))
+        self.assertEqual(self.cli.main(["show-link", "off"]), 0)
+        self.assertFalse(os.path.exists(flag))
+        with self.assertRaises(SystemExit):
+            self.cli.main(["show-link", "maybe"])
+
+
 if __name__ == "__main__":
     unittest.main()

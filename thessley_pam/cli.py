@@ -1,10 +1,11 @@
 """thessley-pam: add, list and remove the phones that may approve logins on this computer.
 
-    sudo thessley-pam enroll [--user NAME] [--port N]
+    sudo thessley-pam enroll [--user NAME] [--port N] [--link]   (--link also prints the link, for the desktop app)
     sudo thessley-pam list   [--user NAME]
     sudo thessley-pam remove CREDENTIAL_ID [--user NAME]
     sudo thessley-pam grace   [--service S --hours H]   ask the phone once per H hours for service S (0 = always ask)
     sudo thessley-pam require [--service S on|off]       refuse users with no phone for service S
+    sudo thessley-pam show-link [on|off]             also print each approval's link as text (desktop app)
     sudo thessley-pam passes                            who holds a phone pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a phone login unlock the GNOME keyring (see keyring.py)
@@ -121,6 +122,8 @@ def cmd_enroll(args) -> int:
         })
         print(f"\nAdd a phone that may approve logins for '{username}' on {host}.\n")
         _show_qr(link)
+        if getattr(args, "link", False):
+            print(f"Link: {link}\n")  # for the Thessley Passkey desktop app on a computer that cannot scan the code
         print(f"In Thessley Passkey: Scan QR code. Valid for {ENROLL_WAIT // 60} minutes. Ctrl+C to cancel.",
               flush=True)
 
@@ -264,6 +267,28 @@ def cmd_require(args) -> int:
     return 0
 
 
+def cmd_show_link(args) -> int:
+    _need_root()
+    flag = os.path.join(store.BASE, "show-link")
+    if args.state is None:
+        print("Approval requests also print their link as text." if os.path.exists(flag) else "Approval requests show only the QR code.")
+        return 0
+    if args.state not in ("on", "off"):
+        sys.exit("Say on or off.")
+    store.ensure_dirs()
+    if args.state == "on":
+        open(flag, "w").close()
+        print("Every sudo or ssh approval request now also prints a line \"Link: thessleypam://...\", which the Thessley Passkey\n"
+              "desktop app can approve (thessley-passkey respond LINK). The login screen is not affected.")
+    else:
+        try:
+            os.unlink(flag)
+        except FileNotFoundError:
+            pass
+        print("Approval requests show only the QR code again.")
+    return 0
+
+
 def cmd_passes(args) -> int:
     from . import grants
     _need_root()
@@ -290,6 +315,7 @@ def main(argv=None) -> int:
     e = sub.add_parser("enroll", help="add a phone for a user (default: the user who ran sudo)")
     e.add_argument("--user")
     e.add_argument("--port", type=int, default=DEFAULT_PORT)
+    e.add_argument("--link", action="store_true", help="also print the link as text (for the desktop app)")
     e.set_defaults(func=cmd_enroll)
     ls = sub.add_parser("list", help="list a user's phones")
     ls.add_argument("--user")
@@ -306,6 +332,9 @@ def main(argv=None) -> int:
     rq.add_argument("--service")
     rq.add_argument("state", nargs="?")
     rq.set_defaults(func=cmd_require)
+    sl = sub.add_parser("show-link", help="print the approval link as text under the QR code (for the desktop app)")
+    sl.add_argument("state", nargs="?")
+    sl.set_defaults(func=cmd_show_link)
     ps = sub.add_parser("passes", help="list the active phone passes")
     ps.set_defaults(func=cmd_passes)
     ep = sub.add_parser("end-pass", help="end phone passes now")
