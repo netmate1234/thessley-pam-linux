@@ -154,10 +154,10 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
                 qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "1", link],
                                     check=True, capture_output=True, text=True).stdout
                 _say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
+                if os.path.exists(os.path.join(store.BASE, "show-link")):
+                    _say(f"Link: {link}")  # above the QR code: it stays in view when the code scrolls the screen
                 for line in qr.splitlines():
                     _say(line)
-                if os.path.exists(os.path.join(store.BASE, "show-link")):
-                    _say(f"Link: {link}")
             if grace > 0 and not login:
                 # sshd drops text printed after its last question, so say this before the phone is answered.
                 _say(f"After you approve, your next login from {rhost} needs no phone for {grace:g} h.")
