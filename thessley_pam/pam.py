@@ -14,6 +14,7 @@ Whatever is printed on stdout is shown to the person by sudo (pam_exec's stdout 
 import contextlib
 import errno
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -35,6 +36,18 @@ OK, REFUSED = 0, 1
 def _log(msg: str, warn: bool = False) -> None:
     syslog.openlog("thessley-pam", syslog.LOG_PID, syslog.LOG_AUTHPRIV)
     syslog.syslog(syslog.LOG_WARNING if warn else syslog.LOG_INFO, msg)
+
+
+def _display_fields(service: str, rhost: str) -> dict:
+    """Optional link fields the apps show ("ssh login from 192.168.1.111" instead of a bare "sudo"). Display only:
+    the signature does not cover them, so a wrong value can mislead a person but never approve anything."""
+    out = {}
+    svc = re.sub(r"[^a-z0-9_-]", "", service.lower())[:32]
+    if svc:
+        out["s"] = svc
+    if rhost and rhost != grants.LOCAL and re.fullmatch(r"[0-9A-Fa-f.:]{1,45}", rhost):
+        out["r"] = rhost
+    return out
 
 
 @contextlib.contextmanager
@@ -146,6 +159,7 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
             link = f"thessleypam://{req_type}?" + urlencode({
                 "h": ip, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
                 "m": mid, "hn": host, "u": username, "tty": tty,
+                **_display_fields(service, rhost),
             })
             if login:
                 # GNOME shows no text art; the extension turns this one line into a QR code.

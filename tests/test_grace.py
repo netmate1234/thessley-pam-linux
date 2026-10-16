@@ -156,6 +156,12 @@ class PamPassTest(unittest.TestCase):
         self.assertTrue(any("approved earlier, valid for another" in s for s in self.said))
         self.assertEqual(self.login(answer=None), (0, False))
 
+    def test_the_link_says_which_service_and_where_from(self):
+        """Display-only fields so the apps can say "ssh login from 192.168.1.50" instead of a bare "sudo"."""
+        self.login()
+        q = {k: v[0] for k, v in parse_qs(urlparse(self.links[-1]).query).items()}
+        self.assertEqual((q["s"], q["r"]), ("sshd", "192.168.1.50"))
+
     def test_a_different_address_asks_again(self):
         self.login()
         self.assertEqual(self.login(env=dict(self.env, PAM_RHOST="192.168.1.77")), (0, True))
