@@ -32,15 +32,16 @@ OFF_MARK = "#thessley-disabled# "  # in front of a PAM line this program switche
 
 
 def _caller(env) -> str:
-    """The account that asked: pkexec sets PKEXEC_UID. (THESSLEY_ADMIN_USER is for tests run as root directly.)"""
-    uid = env.get("PKEXEC_UID")
+    """The account that asked: pkexec sets PKEXEC_UID, sudo sets SUDO_UID (both are set by the tool itself, not by
+    the caller). THESSLEY_ADMIN_USER is for tests run as root directly."""
+    uid = env.get("PKEXEC_UID") or env.get("SUDO_UID")
     if uid is not None:
         return pwd.getpwuid(int(uid)).pw_name
     name = env.get("THESSLEY_ADMIN_USER", "")
     if name:
         pwd.getpwnam(name)
         return name
-    raise PermissionError("not started through pkexec")
+    raise PermissionError("not started through pkexec or sudo")
 
 
 def passwordless_sudo(username: str, sudoers_dir: str = SUDOERS_DIR) -> bool:

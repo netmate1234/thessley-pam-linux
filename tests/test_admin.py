@@ -40,6 +40,10 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("error", out)
 
+    def test_sudo_uid_works_like_pkexec_uid(self):
+        rc, out = call(["state"], {"SUDO_UID": str(os.getuid()), "THESSLEY_ADMIN_USER": "root"})
+        self.assertEqual((rc, out["user"]), (0, USER))
+
     def test_pkexec_uid_decides_the_account(self):
         rc, out = call(["state"], {"PKEXEC_UID": str(os.getuid()), "THESSLEY_ADMIN_USER": "root"})
         self.assertEqual((rc, out["user"]), (0, USER))  # a variable the caller could set cannot name another user
@@ -221,6 +225,22 @@ class PhoneSwitchTest(unittest.TestCase):
         env = {"PAM_TYPE": "auth", "PAM_USER": USER, "PAM_SERVICE": "sudo", "PAM_TTY": "/dev/pts/0"}
         self.assertEqual(pam.run(env), pam.OK)                    # sudo: no active phone, no phone step
         self.assertEqual(pam.run(env, login=True), pam.REFUSED)   # login screen: never let in without a phone
+
+
+class BackendCommandTest(unittest.TestCase):
+    def test_sudo_when_it_needs_no_password_else_pkexec(self):
+        from thessley_pam import admin_gui
+        self.assertEqual(admin_gui.Backend(lambda: True).command("state"), ["sudo", "-n", admin_gui.HELPER, "state"])
+        self.assertEqual(admin_gui.Backend(lambda: False).command("set-phone", "c_x", "off"),
+                         ["pkexec", admin_gui.HELPER, "set-phone", "c_x", "off"])
+
+    def test_the_choice_is_made_once(self):
+        from thessley_pam import admin_gui
+        calls = []
+        b = admin_gui.Backend(lambda: calls.append(1) or True)
+        b.command("state")
+        b.command("state")
+        self.assertEqual(len(calls), 1)
 
 
 class PolkitProblemTest(unittest.TestCase):

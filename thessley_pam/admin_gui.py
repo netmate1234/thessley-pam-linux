@@ -80,13 +80,25 @@ def set_lock_qr(on: bool) -> bool:
     return r.returncode == 0
 
 
+def sudo_without_password() -> bool:
+    """True if `sudo` runs for this account without asking (a NOPASSWD rule). Then the window needs no
+    administrator prompt at all: it runs the helper through sudo."""
+    try:
+        return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def polkit_problem(pam_dir: str = PAM_DIR) -> str:
-    """Why the administrator password prompt cannot work on this computer, if we can tell from here.
+    """Why the administrator password prompt cannot work on this computer, if we can tell from here (and sudo
+    does not already do the job without one).
 
     A pam_yubico line with the `debug` option in common-auth writes its debug text on standard output. The
     polkit prompt reads the PAM helper's standard output as a protocol, so every such line makes GNOME abort the
     sign-in ("Unknown line ... from helper") and no prompt ever appears.
     """
+    if pam_dir == PAM_DIR and sudo_without_password():
+        return ""
     for line in _read(os.path.join(pam_dir, "common-auth")).splitlines():
         if line.lstrip().startswith("#"):
             continue
@@ -132,9 +144,19 @@ def when(ts) -> str:
 class Backend:
     """Talks to the root helper through pkexec. Replaced by a fake in tests."""
 
+    def __init__(self, use_sudo=sudo_without_password):
+        self.use_sudo = use_sudo
+        self._sudo = None
+
+    def command(self, *args: str) -> list[str]:
+        """sudo when it needs no password (no prompt at all), otherwise pkexec (one administrator prompt)."""
+        if self._sudo is None:
+            self._sudo = bool(self.use_sudo())
+        return (["sudo", "-n", HELPER] if self._sudo else ["pkexec", HELPER]) + list(args)
+
     def _run(self, *args: str) -> dict:
         try:
-            out = subprocess.run(["pkexec", HELPER, *args], capture_output=True, text=True, timeout=PKEXEC_WAIT)
+            out = subprocess.run(self.command(*args), capture_output=True, text=True, timeout=PKEXEC_WAIT)
         except subprocess.TimeoutExpired:
             return {"error": "The administrator sign-in timed out. If no password box appeared, see the warning at the top."}
         except OSError as exc:
@@ -309,7 +331,8 @@ class AdminWindow(Adw.ApplicationWindow):
             return False
         if self.problem_fn():
             self.toast("Fix the administrator sign-in first (see the warning at the top).")
-        self.toast("Waiting for the administrator password…")
+        if not (isinstance(self.backend, Backend) and self.backend.command("x")[0] == "sudo"):
+            self.toast("Waiting for the administrator password…")
 
         def work():
             result = self.backend.state()
