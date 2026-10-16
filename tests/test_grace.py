@@ -218,6 +218,23 @@ class PamPassTest(unittest.TestCase):
         self.assertTrue(self.said and self.said[0].startswith(pam.QR_MARKER))  # asked, pass or not
         t.join(10)
 
+    def test_require_phone_refuses_users_without_one(self):
+        store.remove_device(USER, self.device["credential_id"])
+        self.assertEqual(pam.run(self.env), 0)                    # default: no phone, no phone step (like sudo)
+        grants.set_require("sshd", True)
+        self.assertEqual(grants.requires_phone("sshd"), True)
+        self.assertEqual(grants.requires_phone("sudo"), False)
+        self.assertEqual(pam.run(self.env), 1)                    # now refused
+        self.assertTrue(any("no phone is enrolled" in s for s in self.said))
+        self.assertEqual(pam.run(dict(self.env, PAM_SERVICE="sudo")), 0)  # other services unchanged
+        grants.set_require("sshd", False)
+        self.assertEqual(pam.run(self.env), 0)
+
+    def test_require_phone_also_covers_a_user_whose_phones_are_all_switched_off(self):
+        grants.set_require("sshd", True)
+        store.set_disabled(USER, self.device["credential_id"], True)
+        self.assertEqual(pam.run(self.env), 1)
+
     def test_the_text_link_is_shown_only_when_asked_for(self):
         self.login(answer=None)
         self.assertFalse(any(s.startswith("Link: ") for s in self.said))

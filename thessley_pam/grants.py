@@ -55,6 +55,31 @@ def grace_hours(service: str) -> float:
     return min(max(hours, 0.0), MAX_HOURS)
 
 
+def requires_phone(service: str) -> bool:
+    """True if a user with no enrolled (active) phone is refused for this service instead of passing through.
+    Off by default, as it is for sudo (so nobody who never opted in is locked out); on for ssh, where the phone is
+    the only second step and a missing phone would silently mean no second step at all."""
+    try:
+        return service in list(_load_config().get("require", []))
+    except TypeError:
+        return False
+
+
+def set_require(service: str, on: bool) -> None:
+    if not service or any(c in service for c in "/ \t\n\0") or service.startswith("."):
+        raise ValueError("bad service name")
+    store.ensure_dirs()
+    data = _load_config()
+    names = [n for n in data.get("require", []) if n != service]
+    if on:
+        names.append(service)
+    if names:
+        data["require"] = sorted(names)
+    else:
+        data.pop("require", None)
+    _atomic_write(_config_path(), data, store.BASE)
+
+
 def set_grace(service: str, hours: float) -> None:
     if not service or any(c in service for c in "/ \t\n\0") or service.startswith("."):
         raise ValueError("bad service name")

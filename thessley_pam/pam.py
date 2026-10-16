@@ -59,6 +59,10 @@ def run(env: dict, login: bool = False) -> int:
         _log(f"unknown user {username!r} ({service})", warn=True)
         return REFUSED
     if not devices:
+        if not login and grants.requires_phone(service):
+            _say("Thessley Passkey: no phone is enrolled for this account, so this login is refused.")
+            _log(f"no phone for {username} ({service}); refused because a phone is required here", warn=True)
+            return REFUSED
         return REFUSED if login else OK
     req_type = "login" if login else "sudo"
 

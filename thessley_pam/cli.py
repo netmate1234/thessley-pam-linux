@@ -4,6 +4,7 @@
     sudo thessley-pam list   [--user NAME]
     sudo thessley-pam remove CREDENTIAL_ID [--user NAME]
     sudo thessley-pam grace   [--service S --hours H]   ask the phone once per H hours for service S (0 = always ask)
+    sudo thessley-pam require [--service S on|off]       refuse users with no phone for service S
     sudo thessley-pam passes                            who holds a phone pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a phone login unlock the GNOME keyring (see keyring.py)
@@ -246,6 +247,23 @@ def cmd_grace(args) -> int:
     return 0
 
 
+def cmd_require(args) -> int:
+    from . import grants
+    _need_root()
+    if args.service is None:
+        names = grants._load_config().get("require", [])
+        print("Phone required for: " + ", ".join(names) if names else "No service refuses users who have no phone.")
+        return 0
+    if args.state not in ("on", "off"):
+        sys.exit("Say on or off.")
+    try:
+        grants.set_require(args.service, args.state == "on")
+    except ValueError as exc:
+        sys.exit(str(exc))
+    print(f"{args.service}: a user with no enrolled phone is " + ("refused." if args.state == "on" else "let through (no phone step)."))
+    return 0
+
+
 def cmd_passes(args) -> int:
     from . import grants
     _need_root()
@@ -284,6 +302,10 @@ def main(argv=None) -> int:
     g.add_argument("--service")
     g.add_argument("--hours", type=float)
     g.set_defaults(func=cmd_grace)
+    rq = sub.add_parser("require", help="refuse logins by users with no enrolled phone for a PAM service")
+    rq.add_argument("--service")
+    rq.add_argument("state", nargs="?")
+    rq.set_defaults(func=cmd_require)
     ps = sub.add_parser("passes", help="list the active phone passes")
     ps.set_defaults(func=cmd_passes)
     ep = sub.add_parser("end-pass", help="end phone passes now")
