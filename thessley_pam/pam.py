@@ -165,7 +165,7 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
                 # GNOME shows no text art; the extension turns this one line into a QR code.
                 _say(QR_MARKER + link)
             else:
-                qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "1", link],
+                qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "2", link],
                                     check=True, capture_output=True, text=True).stdout
                 _say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
                 if os.path.exists(os.path.join(store.BASE, "show-link")):
