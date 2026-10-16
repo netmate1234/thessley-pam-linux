@@ -3,6 +3,9 @@
     sudo thessley-pam enroll [--user NAME] [--port N]
     sudo thessley-pam list   [--user NAME]
     sudo thessley-pam remove CREDENTIAL_ID [--user NAME]
+    sudo thessley-pam grace   [--service S --hours H]   ask the phone once per H hours for service S (0 = always ask)
+    sudo thessley-pam passes                            who holds a phone pass right now
+    sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a phone login unlock the GNOME keyring (see keyring.py)
     sudo thessley-pam keyring-forget [--user NAME]
     sudo thessley-pam keyring-status [--user NAME]
@@ -217,6 +220,52 @@ def cmd_keyring_status(args) -> int:
         return 1
 
 
+def cmd_grace(args) -> int:
+    from . import grants
+    _need_root()
+    if args.service is None:
+        cfg = grants._load_config().get("grace", {})
+        if not cfg:
+            print("Every login asks the phone (no grace time is set for any service).")
+        for svc, hours in sorted(cfg.items()):
+            print(f"{svc}: the phone is asked once per {hours:g} h")
+        return 0
+    if args.hours is None:
+        sys.exit("Say how long: --hours 4 (or --hours 0 to ask every time).")
+    try:
+        grants.set_grace(args.service, args.hours)
+    except ValueError as exc:
+        sys.exit(str(exc))
+    hours = grants.grace_hours(args.service)
+    if hours > 0:
+        print(f"{args.service}: after one approval the same user from the same address needs no phone for {hours:g} h.\n"
+              "(The pass is tied to the user, the service and the client's address, not to the ssh key.)")
+    else:
+        ended = grants.revoke(service=args.service)
+        print(f"{args.service}: every login asks the phone again." + (f" Ended {ended} pass(es)." if ended else ""))
+    return 0
+
+
+def cmd_passes(args) -> int:
+    from . import grants
+    _need_root()
+    rows = grants.all_passes()
+    if not rows:
+        print("No phone pass is active.")
+        return 0
+    for p in rows:
+        print(f"{p['user']:<12} {p['service']:<10} from {p['rhost']:<18} {grants.remaining(p):>9} left   phone {p['credential']}")
+    return 0
+
+
+def cmd_end_pass(args) -> int:
+    from . import grants
+    _need_root()
+    ended = grants.revoke(args.user, args.service)
+    print(f"Ended {ended} pass(es)." if ended else "No such pass.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="thessley-pam")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -231,6 +280,16 @@ def main(argv=None) -> int:
     rm.add_argument("credential_id")
     rm.add_argument("--user")
     rm.set_defaults(func=cmd_remove)
+    g = sub.add_parser("grace", help="ask the phone once per N hours for a PAM service (e.g. sshd)")
+    g.add_argument("--service")
+    g.add_argument("--hours", type=float)
+    g.set_defaults(func=cmd_grace)
+    ps = sub.add_parser("passes", help="list the active phone passes")
+    ps.set_defaults(func=cmd_passes)
+    ep = sub.add_parser("end-pass", help="end phone passes now")
+    ep.add_argument("--user")
+    ep.add_argument("--service")
+    ep.set_defaults(func=cmd_end_pass)
     for name, fn, text in (("keyring-link", cmd_keyring_link, "seal the login password so a phone login unlocks the GNOME keyring"),
                            ("keyring-forget", cmd_keyring_forget, "delete the sealed password"),
                            ("keyring-status", cmd_keyring_status, "show whether the sealed password can be opened")):

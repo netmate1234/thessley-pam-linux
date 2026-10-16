@@ -20,7 +20,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from . import machine, protocol, store
+from . import grants, machine, protocol, store
 from .listener import Listener
 
 PORT = 47810
@@ -61,6 +61,20 @@ def run(env: dict, login: bool = False) -> int:
     if not devices:
         return REFUSED if login else OK
     req_type = "login" if login else "sudo"
+
+    # A pass from an earlier approval (grace hours switched on for this service with `thessley-pam grace`): the
+    # same user, service and client address need no new approval until it runs out. Never for the login screen.
+    rhost = env.get("PAM_RHOST", "") or grants.LOCAL
+    grace = 0.0 if login else grants.grace_hours(service)
+    if grace > 0:
+        try:
+            held = grants.valid(username, service, rhost, {d["credential_id"] for d in devices})
+        except OSError:
+            held = None
+        if held:
+            _say(f"Thessley Passkey: approved on your phone earlier, valid for another {grants.remaining(held)}.")
+            _log(f"pass used for {username} ({service}, from {rhost}, {grants.remaining(held)} left)")
+            return OK
 
     by_id = {d["credential_id"]: d for d in devices}
     mid, host, ip = machine.machine_id(), machine.hostname(), machine.lan_ip()
@@ -111,6 +125,8 @@ def run(env: dict, login: bool = False) -> int:
                 _say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
                 for line in qr.splitlines():
                     _say(line)
+                if os.path.exists(os.path.join(store.BASE, "show-link")):
+                    _say(f"Link: {link}")
             approved_in_time = done.wait(WAIT)
             time.sleep(0.5)  # let the phone receive its reply before the listener closes
     except OSError as e:
@@ -131,6 +147,13 @@ def run(env: dict, login: bool = False) -> int:
         store.touch(username, outcome["cred"])
     except OSError:
         pass  # last_used is informational; never fail a valid approval over it
+    if grace > 0:
+        try:
+            grants.add(username, service, rhost, grace, outcome["cred"])
+            _say(f"Thessley Passkey: approved. Your next login from {rhost} needs no phone for {grace:g} h.")
+            _log(f"pass granted to {username} ({service}, from {rhost}, {grace:g} h)")
+        except OSError as e:
+            _log(f"could not record the pass for {username}: {e}", warn=True)  # the login itself is still approved
     _log(f"approved by {outcome['label']!r} ({outcome['cred']}) from {outcome['ip']} for {username} "
          f"({service}, {tty})")
     return OK

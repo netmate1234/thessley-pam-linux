@@ -101,6 +101,8 @@ def set_disabled(username: str, credential_id: str, disabled: bool) -> bool:
             else:
                 d.pop("disabled", None)
             save(username, data)
+            if disabled:
+                _end_passes(username, credential_id)
             return True
     return False
 
@@ -129,6 +131,15 @@ def touch(username: str, credential_id: str) -> None:
             return
 
 
+def _end_passes(username: str, credential_id: str) -> None:
+    """A phone that is removed or switched off takes the passes it granted with it."""
+    from . import grants
+    try:
+        grants.revoke_credential(username, credential_id)
+    except OSError:
+        pass
+
+
 def remove_device(username: str, credential_id: str) -> bool:
     data = load(username)
     before = len(data["devices"])
@@ -136,4 +147,5 @@ def remove_device(username: str, credential_id: str) -> bool:
     if len(data["devices"]) == before:
         return False
     save(username, data)
+    _end_passes(username, credential_id)
     return True
