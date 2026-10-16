@@ -78,6 +78,29 @@ class SudoTest(unittest.TestCase):
         t.join(10)
         self.assertEqual(box["rc"], 1)
 
+    def unsigned(self, q, action="deny", nonce=None, cred=None):
+        body = {"credential_id": cred or self.device["credential_id"], "action": action, "timestamp": int(time.time())}
+        if nonce is not False:
+            body["nonce"] = q["n"] if nonce is None else nonce
+        return _post(dict(q), f"/thessley-pam/v1/sudo/{q['id']}/respond", body)
+
+    def test_deny_without_a_signature(self):
+        """The phone says no without asking for a fingerprint: the request's nonce stands in for the signature."""
+        t, box, q = self.start()
+        self.assertEqual(self.unsigned(q)[0], 200)
+        t.join(10)
+        self.assertEqual(box["rc"], 1)
+
+    def test_unsigned_answers_that_must_not_count(self):
+        t, box, q = self.start()
+        self.assertEqual(self.unsigned(q, action="approve")[0], 400)          # an approval always needs the signature
+        self.assertEqual(self.unsigned(q, nonce="wrong-nonce-value")[0], 400)  # a refusal needs the real nonce
+        self.assertEqual(self.unsigned(q, nonce=False)[0], 400)
+        self.assertEqual(self.unsigned(q, cred="c_0000000000000000")[0], 403)  # and an enrolled phone
+        self.assertEqual(self.answer(q)[0], 200)                               # the real approval still works
+        t.join(10)
+        self.assertEqual(box["rc"], 0)
+
     def test_timeout(self):
         t, box, _ = self.start()
         t.join(10)

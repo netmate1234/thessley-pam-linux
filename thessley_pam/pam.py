@@ -13,6 +13,7 @@ Whatever is printed on stdout is shown to the person by sudo (pam_exec's stdout 
 
 import contextlib
 import errno
+import hmac
 import os
 import re
 import secrets
@@ -133,7 +134,9 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
             cred = str(body["credential_id"])
             action = str(body["action"])
             timestamp = int(body["timestamp"])
-            signature = str(body["signature"])
+            # A "deny" may come without a signature (the phone does not ask for a fingerprint to say no); it must
+            # then carry the request's nonce, which only the person who saw the link has. A refusal grants nothing.
+            signature = str(body["signature"]) if "signature" in body else ""
         except (KeyError, TypeError, ValueError):
             return 400, {"result": "error", "message": "Missing fields."}
         device = by_id.get(cred)
@@ -143,13 +146,19 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
             return 400, {"result": "error", "message": "Unknown action."}
         if not protocol.timestamp_ok(timestamp):
             return 400, {"result": "error", "message": "Phone clock is off by more than a minute."}
-        msg = protocol.canonical(req_type, request_id, mid, username, nonce, timestamp, action)
-        if not protocol.verify(device["public_key"], signature, msg):
-            _log(f"bad signature from {client_ip} for {username} ({cred})", warn=True)
-            return 400, {"result": "error", "message": "Signature did not verify."}
+        unsigned = not signature
+        if unsigned:
+            if action != "deny" or not hmac.compare_digest(str(body.get("nonce", "")), nonce):
+                _log(f"unsigned answer refused from {client_ip} for {username} ({cred}, {action})", warn=True)
+                return 400, {"result": "error", "message": "Only a refusal can be sent without a signature."}
+        else:
+            msg = protocol.canonical(req_type, request_id, mid, username, nonce, timestamp, action)
+            if not protocol.verify(device["public_key"], signature, msg):
+                _log(f"bad signature from {client_ip} for {username} ({cred})", warn=True)
+                return 400, {"result": "error", "message": "Signature did not verify."}
         if not taken.acquire(blocking=False):
             return 409, {"result": "error", "message": "This request has already been answered."}
-        outcome.update(action=action, cred=cred, label=device.get("label", ""), ip=client_ip)
+        outcome.update(action=action, cred=cred, label=device.get("label", ""), ip=client_ip, unsigned=unsigned)
         done.set()
         return 200, {"result": "ok"}
 
@@ -192,7 +201,8 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
         return REFUSED
     if outcome["action"] != "approve":
         _say("Thessley Passkey: denied on the phone.")
-        _log(f"denied by {outcome['label']!r} ({outcome['cred']}) for {username} ({service}, {tty})", warn=True)
+        how = ", no fingerprint" if outcome.get("unsigned") else ""
+        _log(f"denied by {outcome['label']!r} ({outcome['cred']}{how}) for {username} ({service}, {tty})", warn=True)
         return REFUSED
 
     try:
