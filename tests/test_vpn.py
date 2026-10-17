@@ -135,6 +135,21 @@ class DaemonTest(VpnBase):
         done = json.loads(conn.makefile().readline())
         self.assertEqual(done["ok"], False)
 
+    def test_a_retrying_client_joins_the_approval_already_waiting(self):
+        conn, f, read = self.ask()
+        self.addCleanup(conn.close)
+        first = read()["url"]
+        conn2, f2, read2 = self.ask()                  # the same account from the same address, a few seconds later
+        self.addCleanup(conn2.close)
+        self.assertEqual(read2()["url"], first)        # the same page and QR code, not a second approval
+        self.assertEqual(len(self.approvals.flows), 1)
+        self.answer(self.flow_link())
+        self.assertEqual(read()["ok"], True)
+        self.assertEqual(read2()["ok"], True)          # one answer lets both through
+        conn3, f3, read3 = self.ask(rhost="198.51.100.9")   # another address is another approval
+        self.addCleanup(conn3.close)
+        self.assertNotEqual(read3()["url"], first)
+
     def test_a_pass_from_an_earlier_approval_needs_no_new_one(self):
         runner_calls = []
         self.approvals.runner = lambda env, say, wait, **kw: (runner_calls.append((env, kw)), pam.OK)[1]

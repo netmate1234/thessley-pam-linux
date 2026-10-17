@@ -95,6 +95,13 @@ class Approvals:
         if not devices:
             return "This account has no device that may approve."
         self.sweep()
+        with self.lock:
+            # A client that retries (OpenVPN Connect does, every few seconds) must join the approval already waiting for this
+            # account from this address instead of opening a second one: there is one approval port, and the person has one
+            # page and one QR code to answer.
+            for waiting in self.flows.values():
+                if waiting.user == user and waiting.rhost == rhost and not waiting.finished.is_set():
+                    return waiting
         flow = Flow(user, rhost)
         with self.lock:
             if sum(1 for f in self.flows.values() if not f.finished.is_set()) >= MAX_FLOWS:
@@ -136,8 +143,11 @@ def page_url(flow: Flow, settings: dict) -> str:
 def make_socket_server(approvals: Approvals, path: str = SOCKET, group: str = "") -> socketserver.ThreadingUnixStreamServer:
     class Handler(socketserver.StreamRequestHandler):
         def send(self, obj: dict) -> None:
-            self.wfile.write((json.dumps(obj) + "\n").encode())
-            self.wfile.flush()
+            try:
+                self.wfile.write((json.dumps(obj) + "\n").encode())
+                self.wfile.flush()
+            except OSError:
+                pass  # the client (OpenVPN's script) is gone; the approval itself carries on or expires
 
         def handle(self) -> None:
             try:
