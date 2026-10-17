@@ -259,15 +259,20 @@ class PageTest(VpnBase):
         self.assertEqual(status, 200)
         self.assertIn(f"/vpn/{fid}.svg", body)
         self.assertIn("thessleypam://", body)
-        self.assertIn('http-equiv="refresh"', body)
+        self.assertNotIn('http-equiv="refresh"', body)            # a page that reloads itself makes the QR code flicker
+        self.assertIn(f'fetch("/vpn/{fid}.json"', body)             # it asks for the state instead
+        nonce = headers["Content-Security-Policy"].split("'nonce-")[1].split("'")[0]
+        self.assertIn(f'<script nonce="{nonce}">', body)
         self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
+        self.assertEqual(json.loads(self.get(f"/vpn/{fid}.json")[2]), {"finished": False, "has_link": True})
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(self.get(f"/vpn/{fid}.svg")[0], 200)
         self.answer(self.flow_link())
         read()
         status, _, body = self.get(f"/vpn/{fid}")
         self.assertIn("Approved", body)
-        self.assertNotIn('http-equiv="refresh"', body)
+        self.assertNotIn("<script", body)
+        self.assertEqual(json.loads(self.get(f"/vpn/{fid}.json")[2])["finished"], True)
 
     def test_unknown_or_malformed_addresses_are_404(self):
         for path in ("/", "/vpn/", "/vpn/" + "0" * 32, "/vpn/../etc/passwd", "/vpn/" + "g" * 32, "/vpn/" + "0" * 32 + ".svg"):

@@ -177,16 +177,23 @@ def make_socket_server(approvals: Approvals, path: str = SOCKET, group: str = ""
 
 PAGE_CSS = ("body{font-family:system-ui,sans-serif;margin:0;padding:24px 16px;background:#f6f7f9;color:#14181f}"
             "main{max-width:34rem;margin:0 auto}h1{font-size:1.2rem}.card{background:#fff;border-radius:12px;padding:20px;"
-            "box-shadow:0 1px 3px #0002}.qr{width:100%;max-width:18rem;display:block;margin:12px auto}"
+            "box-shadow:0 1px 3px #0002}.qr{width:100%;max-width:24rem;display:block;margin:12px auto;background:#fff;padding:12px;border-radius:8px;box-sizing:border-box}"
             ".mono{font-family:ui-monospace,monospace;font-size:.75rem;word-break:break-all}.dim{color:#5a6472}"
             ".btn{display:inline-block;padding:10px 16px;border-radius:8px;background:#1b5fd6;color:#fff;text-decoration:none}"
             ".ok{color:#0a7a3b}.bad{color:#b3261e}"
             "@media(prefers-color-scheme:dark){body{background:#14161a;color:#e8ebf0}.card{background:#1d2128}.dim{color:#9aa4b2}}")
 
 
-def render_page(flow: Flow, qr: bool) -> str:
+def render_page(flow: Flow, nonce: str = "") -> str:
     esc = html.escape
-    refresh = '<meta http-equiv="refresh" content="3">' if not flow.finished.is_set() else ""
+    # While waiting, a small script asks for the state every 2 s and reloads only when it changes (the link appeared, or the
+    # answer came). A page that reloads itself every few seconds makes the QR code flicker, which cannot be scanned.
+    poll = ""
+    if not flow.finished.is_set() and nonce:
+        poll = (f'<script nonce="{esc(nonce, quote=True)}">(function(){{var had={"true" if flow.link else "false"};'
+                f'function tick(){{fetch("/vpn/{flow.id}.json",{{cache:"no-store"}}).then(function(r){{return r.json()}})'
+                '.then(function(s){if(s.finished||s.has_link!==had){location.reload();return}setTimeout(tick,2000)})'
+                '.catch(function(){setTimeout(tick,4000)})}tick()})();</script>')
     if flow.state == "approved":
         body = '<p class="ok"><strong>Approved.</strong> The VPN is connecting. You can close this page.</p>'
     elif flow.finished.is_set():
@@ -199,9 +206,9 @@ def render_page(flow: Flow, qr: bool) -> str:
     else:
         body = '<p class="dim">Getting the request ready…</p>'
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'{refresh}<title>VPN login for {esc(flow.user)} · Thessley Passkeys for {esc(machine.hostname())}</title>'
+            f'<title>VPN login for {esc(flow.user)} · Thessley Passkeys for {esc(machine.hostname())}</title>'
             f'<style>{PAGE_CSS}</style></head><body><main><h1>VPN login for {esc(flow.user)}</h1>'
-            f'<div class="card">{body}</div></main></body></html>')
+            f'<div class="card">{body}</div>{poll}</main></body></html>')
 
 
 def make_page_handler(approvals: Approvals, qr_svg):
@@ -212,7 +219,7 @@ def make_page_handler(approvals: Approvals, qr_svg):
         def log_message(self, *args) -> None:  # noqa: D401 - quiet; the approvals are logged by pam.run
             pass
 
-        def reply(self, code: int, body: bytes, ctype: str) -> None:
+        def reply(self, code: int, body: bytes, ctype: str, nonce: str = "") -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
@@ -220,21 +227,26 @@ def make_page_handler(approvals: Approvals, qr_svg):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
+            script = f"script-src 'nonce-{nonce}'; connect-src 'self'; " if nonce else ""
             self.send_header("Content-Security-Policy",
-                             "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'")
+                             f"default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; {script}base-uri 'none'; form-action 'none'")
             self.end_headers()
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
-            m = re.fullmatch(r"/vpn/([0-9a-f]{32})(\.svg)?", self.path.split("?")[0])
+            m = re.fullmatch(r"/vpn/([0-9a-f]{32})(\.svg|\.json)?", self.path.split("?")[0])
             flow = approvals.get(m.group(1)) if m else None
             if flow is None:
                 return self.reply(404, b"Not found", "text/plain; charset=utf-8")
-            if m.group(2):
+            if m.group(2) == ".svg":
                 if not flow.link:
                     return self.reply(404, b"Not found", "text/plain; charset=utf-8")
                 return self.reply(200, qr_svg(flow.link), "image/svg+xml")
-            self.reply(200, render_page(flow, True).encode(), "text/html; charset=utf-8")
+            if m.group(2) == ".json":
+                state = {"finished": flow.finished.is_set(), "has_link": bool(flow.link)}
+                return self.reply(200, json.dumps(state).encode(), "application/json")
+            nonce = secrets.token_urlsafe(12)
+            self.reply(200, render_page(flow, nonce).encode(), "text/html; charset=utf-8", nonce)
 
     return Handler
 
