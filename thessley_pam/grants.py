@@ -238,6 +238,15 @@ def all_passes(now: float | None = None) -> list[dict]:
     return out
 
 
+def passes_of(username: str, now: float | None = None) -> list[dict]:
+    """The live passes of one account."""
+    now = time.time() if now is None else now
+    try:
+        return _live(_load(username), now)
+    except KeyError:
+        return []
+
+
 def revoke(username: str | None = None, service: str | None = None) -> int:
     """End passes (all of a user's, or one service's). Returns how many ended."""
     ended = 0
@@ -248,6 +257,15 @@ def revoke(username: str | None = None, service: str | None = None) -> int:
         ended += len(items) - len(keep)
         _save(name, keep)
     return ended
+
+
+def revoke_one(username: str, service: str, rhost: str) -> int:
+    """End the one pass for this user, service and client address. Returns how many ended (0 or 1)."""
+    items = _load(username)
+    keep = [i for i in items if not (i.get("service") == service and i.get("rhost") == rhost)]
+    if len(keep) != len(items):
+        _save(username, keep)
+    return len(items) - len(keep)
 
 
 def revoke_credential(username: str, credential: str) -> int:
