@@ -65,7 +65,9 @@ class Browser:
         return self.request("POST", path, data or {})
 
 
-class WebTest(unittest.TestCase):
+class WebBase(unittest.TestCase):
+    """The server, the fake phone and the helpers; the tests are in WebTest and KeyDetailsTest."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -155,6 +157,8 @@ class WebTest(unittest.TestCase):
             return fid, self.wait_for(browser, fid, lambda s: s.get("next"))
         return fid, self.wait_for(browser, fid, lambda s: s["state"] in ("refused", "timeout"))
 
+
+class WebTest(WebBase):
     # -- sign-in
     def test_sign_in_with_a_phone_approval_opens_the_page(self):
         self.assertEqual(self.b.get("/keys")[0].status, 303)  # not signed in: sent to the sign-in page
@@ -391,6 +395,70 @@ class WebTest(unittest.TestCase):
         first = web.ensure_cert(cert, key, ["127.0.0.1"])
         self.assertEqual(web.ensure_cert(cert, key, ["127.0.0.1"]), first)
         self.assertEqual(os.stat(key).st_mode & 0o777, 0o600)
+
+
+class KeyDetailsTest(WebBase):
+    """What the page says about each key."""
+
+    @staticmethod
+    def fake_android_chain(key_level: int, attestation_level: int) -> list:
+        import base64
+        import datetime
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+        key = ec.generate_private_key(ec.SECP256R1())
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Android Keystore Key")])
+        # KeyDescription: SEQUENCE { attestationVersion 4, attestationSecurityLevel, keymasterVersion 4, keymasterSecurityLevel }
+        raw = bytes([0x30, 0x0C, 0x02, 0x01, 0x04, 0x0A, 0x01, attestation_level, 0x02, 0x01, 0x04, 0x0A, 0x01, key_level])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+                .serial_number(1).not_valid_before(now - datetime.timedelta(days=1)).not_valid_after(now + datetime.timedelta(days=30))
+                .add_extension(x509.UnrecognizedExtension(x509.ObjectIdentifier(web.ATTESTATION_OID), raw), critical=False)
+                .sign(key, hashes.SHA256()))
+        return [base64.b64encode(cert.public_bytes(serialization.Encoding.DER)).decode()]
+
+    def keys_body(self):
+        self.login()
+        return self.b.get("/keys")[1]
+
+    def test_an_app_key_says_what_it_is_and_shows_its_fingerprint(self):
+        body = self.keys_body()
+        self.assertIn("Details", body)
+        self.assertIn("An app key", body)
+        self.assertIn("ECDSA on secp256r1", body)
+        self.assertRegex(body, r"[0-9a-f]{4}(:[0-9a-f]{4}){7}…")
+
+    def test_a_phone_key_shows_where_the_key_lives(self):
+        store.add_device(USER, FakePhone().spki, "Strong phone", self.fake_android_chain(key_level=2, attestation_level=1))
+        body = self.keys_body()
+        self.assertIn("A phone key (Android Keystore)", body)
+        self.assertIn("StrongBox (separate secure chip)", body)
+        self.assertIn("Trusted environment (TEE)", body)
+        self.assertIn("does not check them against a root of trust", body)  # said plainly: stored, not verified
+
+    def test_an_unreadable_chain_does_not_break_the_page(self):
+        store.add_device(USER, FakePhone().spki, "Odd phone", ["not base64 der"])
+        body = self.keys_body()
+        self.assertIn("could not be read", body)
+        self.assertIn("Odd phone", body)
+
+    def test_use_count_and_passes_come_from_the_log_and_the_pass_store(self):
+        cred = self.device["credential_id"]
+        self.app.journal = lambda: [
+            f"2026-10-17T01:14:10+02:00 h thessley-pam[1]: approved by 'My phone' ({cred}) from 192.168.1.5 for {USER} (sshd, ssh)",
+            f"2026-10-17T02:00:00+02:00 h thessley-pam[2]: approved by 'My phone' ({cred}) from 192.168.1.9 for {USER} (sudo, /dev/pts/1)",
+        ]
+        grants.add(USER, "sshd", "192.168.1.5", 4, cred)
+        body = self.keys_body()
+        self.assertIn("2, the last on 2026-10-17 02:00:00 from 192.168.1.9", body)
+        self.assertIn("sshd from 192.168.1.5", body)
+
+    def test_the_der_reader_refuses_garbage(self):
+        for bad in (b"", b"\x30", b"\x31\x00", b"\x30\x05\x02"):
+            with self.assertRaises((ValueError, IndexError)):
+                web.parse_key_description(bad)
 
 
 class SettingsTest(unittest.TestCase):

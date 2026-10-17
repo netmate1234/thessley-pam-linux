@@ -21,6 +21,7 @@ unless you give the service a real certificate with `web cert`). `web status` pr
 
 from __future__ import annotations
 
+import base64
 import datetime
 import grp
 import hashlib
@@ -346,6 +347,34 @@ class WebApp:
             raise ValueError("unknown setting")
         return run
 
+    # -- per-key details
+    def key_usage(self) -> dict[str, tuple[int, str, str]]:
+        """credential id -> (times it approved, when last, from which address) from the journal."""
+        out: dict[str, list] = {}
+        pattern = re.compile(r"approved by '.*?' \((?P<cred>c_\w+)\) from (?P<ip>[\d.:]+) for \S+ \((?P<svc>[\w-]+)")
+        for line in self.journal():
+            m = re.match(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\S* \S+ thessley-pam\[\d+\]: (.*)$", line)
+            hit = pattern.search(m.group(2)) if m else None
+            if hit:
+                entry = out.setdefault(hit["cred"], [0, "", ""])
+                entry[0] += 1
+                entry[1], entry[2] = m.group(1).replace("T", " "), hit["ip"]
+        return {k: (v[0], v[1], v[2]) for k, v in out.items()}
+
+    def key_details(self, user: str, device: dict, usage: dict) -> list[tuple[str, str]]:
+        """Everything worth knowing about one key, as (name, value) rows."""
+        cred = device["credential_id"]
+        rows = attestation_facts(device.get("attestation_chain") or []) + public_key_facts(device.get("public_key", ""))
+        count, when, ip = usage.get(cred, (0, "", ""))
+        rows.append(("Approvals in the log", f"{count}" + (f", the last on {when} from {ip}" if count else "")))
+        try:
+            held = [p for p in grants.all_passes() if p.get("user") == user and p.get("credential") == cred]
+        except OSError:
+            held = []
+        rows.append(("Passes it granted that are still valid",
+                     "; ".join(f"{p['service']} from {p['rhost']} ({grants.remaining(p)} left)" for p in held) or "none"))
+        return rows
+
     # -- the activity log
     def activity(self, user: str | None) -> list[tuple[str, str]]:
         out = []
@@ -354,6 +383,77 @@ class WebApp:
             if parsed:
                 out.append(parsed)
         return out[-80:][::-1]
+
+
+# ---- what is known about a key -----------------------------------------------------------------------------------
+
+ATTESTATION_OID = "1.3.6.1.4.1.11129.2.1.17"  # Android key attestation: the extension that says where the key lives
+SECURITY_LEVELS = {0: "Software only", 1: "Trusted environment (TEE)", 2: "StrongBox (separate secure chip)"}
+
+
+def _der(data: bytes, pos: int) -> tuple[int, int, int]:
+    """One DER element at pos: (tag, start of its content, end of its content)."""
+    tag = data[pos]
+    first = data[pos + 1]
+    if first < 0x80:
+        length, start = first, pos + 2
+    else:
+        n = first & 0x7F
+        length, start = int.from_bytes(data[pos + 2:pos + 2 + n], "big"), pos + 2 + n
+    if start + length > len(data):
+        raise ValueError("truncated")
+    return tag, start, start + length
+
+
+def parse_key_description(raw: bytes) -> dict:
+    """The first fields of an Android KeyDescription: attestation version and where the key was made and is kept."""
+    tag, start, end = _der(raw, 0)
+    if tag != 0x30:
+        raise ValueError("not a sequence")
+    values, pos = [], start
+    for _ in range(4):  # attestationVersion, attestationSecurityLevel, keymasterVersion, keymasterSecurityLevel
+        t, s, e = _der(raw, pos)
+        values.append(int.from_bytes(raw[s:e], "big"))
+        pos = e
+    return {"version": values[0], "attestation_level": values[1], "key_level": values[3]}
+
+
+def public_key_facts(public_key_b64: str) -> list[tuple[str, str]]:
+    """Algorithm and fingerprint of a stored public key (base64 SubjectPublicKeyInfo)."""
+    try:
+        der = base64.b64decode(public_key_b64)
+        key = serialization.load_der_public_key(der)
+    except Exception:
+        return [("Public key", "could not be read")]
+    algo = "unknown"
+    if isinstance(key, ec.EllipticCurvePublicKey):
+        algo = f"ECDSA on {key.curve.name} (signs with SHA-256)"
+    digest = hashlib.sha256(der).hexdigest()
+    return [("Algorithm", algo), ("Key fingerprint (SHA-256)", ":".join(digest[i:i + 4] for i in range(0, 32, 4)) + "…")]
+
+
+def attestation_facts(chain: list[str]) -> list[tuple[str, str]]:
+    """What a stored attestation chain says. The computer keeps it but does not check it against a root of trust."""
+    if not chain:
+        return [("Kind", "An app key (Thessley Passkey desktop app): no hardware attestation was sent. Its protection (PIN, TPM chip, "
+                         "security key) is set on that computer."),
+                ("Hardware attestation", "none")]
+    facts = [("Kind", "A phone key (Android Keystore)")]
+    try:
+        certs = [x509.load_der_x509_certificate(base64.b64decode(c)) for c in chain]
+    except Exception:
+        return facts + [("Hardware attestation", f"{len(chain)} certificates stored, but they could not be read")]
+    facts.append(("Hardware attestation", f"{len(certs)} certificates stored; this computer does not check them against a root of trust"))
+    try:
+        ext = certs[0].extensions.get_extension_for_oid(x509.ObjectIdentifier(ATTESTATION_OID))
+        info = parse_key_description(ext.value.value)
+        facts.append(("Where the key lives", SECURITY_LEVELS.get(info["key_level"], f"level {info['key_level']}")))
+        facts.append(("Attestation made by", SECURITY_LEVELS.get(info["attestation_level"], f"level {info['attestation_level']}")
+                      + f" (attestation version {info['version']})"))
+    except (x509.ExtensionNotFound, ValueError, IndexError):
+        facts.append(("Where the key lives", "the certificate carries no attestation record"))
+    facts.append(("Certificate issued", certs[0].not_valid_before_utc.strftime("%Y-%m-%d")))
+    return facts
 
 
 # ---- certificate, QR, journal --------------------------------------------------------------------------------------
@@ -546,7 +646,7 @@ tick();
             f'<script nonce="{esc(nonce)}">{script}</script>')
 
 
-def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[str]) -> str:
+def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[str], details=None) -> str:
     rows = []
     devices = store.devices(user)
     for d in devices:
@@ -559,6 +659,7 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
             f'<div class="card"><strong>{esc(d.get("label", ""))}</strong> '
             f'{"<span class=bad>(switched off)</span>" if off else "<span class=ok>(active)</span>"}'
             f'<div class="dim">Added {esc(when)} · last used {esc(used)}</div><div class="mono dim">{esc(cred)}</div>'
+            + key_details_html(details(d) if details else []) +
             f'<div class="row">'
             f'<form method="post" action="/keys/rename">{hidden}<input type="text" name="label" value="{esc(d.get("label", ""))}" maxlength="64" style="width:12rem"><button>Rename</button></form>'
             f'<form method="post" action="/keys/{"enable" if off else "disable"}">{hidden}<button>{"Switch on" if off else "Switch off"}</button></form>'
@@ -575,6 +676,13 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
            f'<input type="hidden" name="user" value="{esc(user)}"><div class="row"><button class="primary">Add a phone or app</button></div></form>')
     note = ('<p class="dim">Changes ask your phone for a fresh approval first, so nobody who only has this browser can change them.</p>')
     return flash_html(flash) + f"<h2>Keys for {esc(user)}</h2>{who}{note}{''.join(rows)}{add}"
+
+
+def key_details_html(rows: list[tuple[str, str]]) -> str:
+    if not rows:
+        return ""
+    body = "".join(f"<tr><td class='dim' style='white-space:nowrap'>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in rows)
+    return f"<details style='margin-top:8px'><summary class='link' style='cursor:pointer'>Details</summary><table>{body}</table></details>"
 
 
 def log_page(rows: list[tuple[str, str]], who: str) -> str:
@@ -754,7 +862,9 @@ def make_handler(app: WebApp):
                     return self.html(403, "Not allowed", flash_html("You can only see your own keys."), s)
                 flash, s.flash = s.flash, ""
                 users = store.all_users() if is_admin(s.user) else []
-                return self.html(200, "Your keys", keys_page(target, s, flash, is_admin(s.user), users), s)
+                usage = app.key_usage()
+                return self.html(200, "Your keys", keys_page(target, s, flash, is_admin(s.user), users,
+                                                              lambda d: app.key_details(target, d, usage)), s)
             if route == "/log":
                 s = self.need_session()
                 if s is None:
