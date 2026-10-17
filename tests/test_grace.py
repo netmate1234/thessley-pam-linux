@@ -151,7 +151,7 @@ class PamPassTest(unittest.TestCase):
 
     def test_first_login_asks_then_the_next_ones_do_not(self):
         self.assertEqual(self.login(), (0, True))
-        self.assertTrue(any("next login from 192.168.1.50 needs no phone for 4 h" in s for s in self.said))
+        self.assertTrue(any("next login from 192.168.1.50 needs no device for 4 h" in s for s in self.said))
         self.assertEqual(self.login(answer=None), (0, False))
         self.assertTrue(any("approved earlier, valid for another" in s for s in self.said))
         self.assertEqual(self.login(answer=None), (0, False))
@@ -254,7 +254,7 @@ class PamPassTest(unittest.TestCase):
         self.assertEqual(grants.requires_phone("sshd"), True)
         self.assertEqual(grants.requires_phone("sudo"), False)
         self.assertEqual(pam.run(self.env), 1)                    # now refused
-        self.assertTrue(any("no phone is enrolled" in s for s in self.said))
+        self.assertTrue(any("no device is enrolled" in s for s in self.said))
         self.assertEqual(pam.run(dict(self.env, PAM_SERVICE="sudo")), 0)  # other services unchanged
         grants.set_require("sshd", False)
         self.assertEqual(pam.run(self.env), 0)

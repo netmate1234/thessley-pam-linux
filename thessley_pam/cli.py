@@ -1,17 +1,17 @@
-"""thessley-pam: add, list and remove the phones that may approve logins on this computer.
+"""thessley-pam: add, list and remove the devices that may approve logins on this computer.
 
     sudo thessley-pam enroll [--user NAME] [--port N]            (prints the link as text above the QR code; --link is accepted, no longer needed)
     sudo thessley-pam list   [--user NAME]
     sudo thessley-pam remove CREDENTIAL_ID [--user NAME]
-    sudo thessley-pam grace   [--service S --hours H]   ask the phone once per H hours for service S (0 = always ask)
-    sudo thessley-pam require [--service S on|off]       refuse users with no phone for service S
+    sudo thessley-pam grace   [--service S --hours H]   ask the device once per H hours for service S (0 = always ask)
+    sudo thessley-pam require [--service S on|off]       refuse users with no device for service S
     sudo thessley-pam show-link [on|off]             print each approval's link as text (on by default)
-    sudo thessley-pam enroll-me [--link]            a user adds a phone for their own account (see install-selfenroll.sh)
-    sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd phone needs the 1st to approve
+    sudo thessley-pam enroll-me [--link]            a user adds a device for their own account (see install-selfenroll.sh)
+    sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd device needs the 1st to approve
     sudo thessley-pam web [status|on|off|serve|listen ADDR|port N|session MIN|cert FILE KEY]   the admin web page (web.py)
-    sudo thessley-pam passes                            who holds a phone pass right now
+    sudo thessley-pam passes                            who holds a device pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
-    sudo thessley-pam keyring-link   [--user NAME]   let a phone login unlock the GNOME keyring (see keyring.py)
+    sudo thessley-pam keyring-link   [--user NAME]   let a device login unlock the GNOME keyring (see keyring.py)
     sudo thessley-pam keyring-forget [--user NAME]
     sudo thessley-pam keyring-status [--user NAME]
 """
@@ -85,7 +85,7 @@ def cmd_enroll(args) -> int:
     username = _target_user(args.user)
     tty = _open_tty()
     if tty is None:
-        sys.exit("Run this in a terminal: you will be asked to type yes to confirm the phone.")
+        sys.exit("Run this in a terminal: you will be asked to type yes to confirm the device.")
     tty.close()
     # The helpers are looked up when called, so a test (or another front end) can replace them.
     device = _enroll_flow(username, args.port, say=lambda text: print(text, flush=True),
@@ -93,8 +93,9 @@ def cmd_enroll(args) -> int:
     return 0 if device else 1
 
 
-def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: threading.Event | None = None):
-    """Add one phone for `username`: show the link (and QR), wait for the phone, show the pairing code, ask whether the
+def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: threading.Event | None = None,
+                 enroll_wait: float = ENROLL_WAIT, confirm_wait: float = CONFIRM_WAIT):
+    """Add one device for `username`: show the link (and QR), wait for the device, show the pairing code, ask whether the
     codes match. Returns the stored device, or None. Used by the command line (say = print, ask_yes = a prompt on the
     terminal) and by the admin web page (say collects lines for the page, ask_yes waits for a button, cancel is set
     when the person leaves the page)."""
@@ -174,14 +175,14 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
             public_key = str(body["public_key"])
             signature = str(body["proof_signature"])
             timestamp = int(body["timestamp"])
-            label = str(body.get("label") or "Phone").strip()
+            label = str(body.get("label") or "Device").strip()
             chain = [str(c) for c in body.get("attestation_chain") or []][:10]
         except (KeyError, TypeError, ValueError):
             return 400, {"result": "error", "message": "Missing fields."}
         if not LABEL.match(label):
-            label = "Phone"
+            label = "Device"
         if not protocol.timestamp_ok(timestamp):
-            return 400, {"result": "error", "message": "Phone clock is off by more than a minute."}
+            return 400, {"result": "error", "message": "Device clock is off by more than a minute."}
         msg = protocol.canonical("enroll", request_id, mid, username, nonce, timestamp, "register")
         if not protocol.verify(public_key, signature, msg):
             return 400, {"result": "error", "message": "Signature did not verify."}
@@ -192,7 +193,7 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
         attestation = check_tpm(public_key, tpm if isinstance(tpm, dict) else None)
         pending.put({"client_ip": client_ip, "public_key": public_key, "label": label, "chain": chain,
                      "attestation": attestation})
-        if not decided.wait(CONFIRM_WAIT + 10) or not decision.get("ok"):
+        if not decided.wait(confirm_wait + 10) or not decision.get("ok"):
             return 200, {"result": "denied", "message": "Not confirmed on the computer."}
         return 200, {"result": "ok", "credential_id": decision["credential_id"], "username": username,
                      "hostname": host, "attestation": "tpm" if (attestation or {}).get("level") == "tpm" else ""}
@@ -205,15 +206,15 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
             "h": ip, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
             "m": mid, "hn": host, "u": username,
         })
-        say(f"\nAdd a phone that may approve logins for '{username}' on {host}.\n")
+        say(f"\nAdd a device that may approve logins for '{username}' on {host}.\n")
         say(f"Link: {link}\n")  # always: for the desktop app, or a phone that cannot scan this screen
         if show_qr:
             show_qr(link)
-        say(f"In Thessley Passkey: Scan QR code. Valid for {ENROLL_WAIT // 60} minutes. Ctrl+C to cancel.")
+        say(f"In Thessley Passkey: Scan QR code. Valid for {int(enroll_wait) // 60} minutes. Ctrl+C to cancel.")
 
         item = None
         waited = 0.0
-        while item is None and waited < ENROLL_WAIT and not cancel.is_set():
+        while item is None and waited < enroll_wait and not cancel.is_set():
             try:
                 item = pending.get(timeout=1)
             except queue.Empty:
@@ -230,7 +231,7 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
         if att:
             say("    TPM:   " + (f"verified, a genuine TPM 2.0 chip ({(att['maker'] + ' ' + att['model']).strip() or 'maker not named'})"
                                  if att["level"] == "tpm" else f"claimed but NOT verified ({att['reason']})") + "\n")
-        ok = ask_yes("Does the phone show the same code? Type yes to add it: ", CONFIRM_WAIT)
+        ok = ask_yes("Does the device show the same code? Type yes to add it: ", confirm_wait)
         if ok:
             device = store.add_device(username, item["public_key"], item["label"], item["chain"], item.get("attestation"))
             decision.update(ok=True, credential_id=device["credential_id"])
@@ -246,10 +247,10 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
 
 
 def self_enroll_route(username: str | None) -> tuple[str | None, str]:
-    """How this account may enrol a phone itself: ("first", "") when it has none, ("approve", "") when it has one that
-    must say yes first, or (None, why not). A first phone is the only one nobody has to approve; anyone who can run a
-    session as the account (it takes its password) could add one, so any further phone needs a fresh approval from
-    a phone already enrolled (no pass ever counts), and phones that are all switched off (lost) need an administrator."""
+    """How this account may enrol a device itself: ("first", "") when it has none, ("approve", "") when it has one that
+    must say yes first, or (None, why not). A first device is the only one nobody has to approve; anyone who can run a
+    session as the account (it takes its password) could add one, so any further device needs a fresh approval from
+    a device already enrolled (no pass ever counts), and devices that are all switched off (lost) need an administrator."""
     if not username or username == "root":
         return None, "This is for a normal user, run through sudo. An administrator uses: sudo thessley-pam enroll --user NAME"
     try:
@@ -257,12 +258,12 @@ def self_enroll_route(username: str | None) -> tuple[str | None, str]:
     except KeyError:
         return None, f"No such user: {username}"
     if not grants.self_enroll_allowed():
-        return None, "Adding a phone yourself is switched off on this computer. Ask an administrator."
+        return None, "Adding a device yourself is switched off on this computer. Ask an administrator."
     devices = store.devices(username)
     if any(not d.get("disabled") for d in devices):
         return "approve", ""
     if devices:
-        return None, "Your phones are switched off here, so a new one needs an administrator."
+        return None, "Your devices are switched off here, so a new one needs an administrator."
     return "first", ""
 
 
@@ -273,7 +274,7 @@ def self_enroll_problem(username: str | None) -> str | None:
 
 def cmd_enroll_me(args) -> int:
     """For a normal user, through sudo (install-selfenroll.sh allows exactly this command). The account is whoever
-    sudo says is calling (SUDO_USER, which the caller cannot choose): nobody can add a phone for another account."""
+    sudo says is calling (SUDO_USER, which the caller cannot choose): nobody can add a device for another account."""
     _need_root()
     username = os.environ.get("SUDO_USER")
     route, problem = self_enroll_route(username)
@@ -284,12 +285,12 @@ def cmd_enroll_me(args) -> int:
     syslog.openlog("thessley-pam", syslog.LOG_PID, syslog.LOG_AUTHPRIV)
     syslog.syslog(syslog.LOG_INFO, f"self-enrol started by {username!r} ({route})")
     if route == "approve":
-        print(f"You already have a phone for '{username}'. It must approve adding another one first.")
+        print(f"You already have a device for '{username}'. It must approve adding another one first.")
         approved = pam.run({"PAM_TYPE": "auth", "PAM_USER": username, "PAM_SERVICE": APPROVE_SERVICE, "PAM_TTY": "-"})
         if approved != pam.OK:
             print("Not approved. Nothing was added.")
             return 1
-        print("Approved. Now add the new phone.")
+        print("Approved. Now add the new device.")
     return cmd_enroll(argparse.Namespace(user=username, port=DEFAULT_PORT, link=getattr(args, "link", False)))
 
 
@@ -344,11 +345,11 @@ def cmd_web(args) -> int:
 def cmd_self_enroll(args) -> int:
     _need_root()
     if args.state is None:
-        print("Users may add their own first phone: " + ("yes" if grants.self_enroll_allowed() else "no"))
+        print("Users may add their own first device: " + ("yes" if grants.self_enroll_allowed() else "no"))
         return 0
     grants.set_self_enroll(args.state == "on")
-    print("Users may now add their own first phone." if args.state == "on"
-          else "Only administrators can add phones now.")
+    print("Users may now add their own first device." if args.state == "on"
+          else "Only administrators can add devices now.")
     return 0
 
 
@@ -357,7 +358,7 @@ def cmd_list(args) -> int:
     username = _target_user(args.user)
     devs = store.devices(username)
     if not devs:
-        print(f"No phones enrolled for {username}.")
+        print(f"No devices enrolled for {username}.")
         return 0
     import datetime
     for d in devs:
@@ -385,8 +386,8 @@ def cmd_keyring_link(args) -> int:
     _need_root()
     username = _target_user(args.user)
     if not store.devices(username):
-        sys.exit(f"{username} has no enrolled phone yet: run  sudo thessley-pam enroll  first.")
-    print(f"This seals {username}'s login password in this computer's TPM, so that logging in with the phone can\n"
+        sys.exit(f"{username} has no enrolled device yet: run  sudo thessley-pam enroll  first.")
+    print(f"This seals {username}'s login password in this computer's TPM, so that logging in with the device can\n"
           "unlock the GNOME keyring (saved Wi-Fi, browser and app passwords) as a typed password does.\n"
           "It is released only after the phone approves a login, and only while this computer's Secure Boot state\n"
           "is unchanged. If you change your password later, run this again.\n")
@@ -399,7 +400,7 @@ def cmd_keyring_link(args) -> int:
         sys.exit(f"Could not seal it in the TPM: {exc}")
     finally:
         password = ""
-    print("Done. Log out and log in with the phone to try it.")
+    print("Done. Log out and log in with the device to try it.")
     return 0
 
 
@@ -416,11 +417,11 @@ def cmd_keyring_status(args) -> int:
     _need_root()
     username = _target_user(args.user)
     if not keyring.is_linked(username):
-        print(f"{username}: no sealed password. A phone login will not unlock the keyring.")
+        print(f"{username}: no sealed password. A device login will not unlock the keyring.")
         return 0
     try:
         keyring.unseal(username)
-        print(f"{username}: sealed and readable now. A phone login will unlock the keyring.")
+        print(f"{username}: sealed and readable now. A device login will unlock the keyring.")
         return 0
     except keyring.KeyringError as exc:
         print(f"{username}: sealed, but cannot be opened now ({str(exc)[-120:]}).\n"
@@ -434,9 +435,9 @@ def cmd_grace(args) -> int:
     if args.service is None:
         cfg = grants._load_config().get("grace", {})
         if not cfg:
-            print("Every login asks the phone (no grace time is set for any service).")
+            print("Every login asks the device (no grace time is set for any service).")
         for svc, hours in sorted(cfg.items()):
-            print(f"{svc}: the phone is asked once per {hours:g} h")
+            print(f"{svc}: the device is asked once per {hours:g} h")
         return 0
     if args.hours is None:
         sys.exit("Say how long: --hours 4 (or --hours 0 to ask every time).")
@@ -446,11 +447,11 @@ def cmd_grace(args) -> int:
         sys.exit(str(exc))
     hours = grants.grace_hours(args.service)
     if hours > 0:
-        print(f"{args.service}: after one approval the same user from the same address needs no phone for {hours:g} h.\n"
+        print(f"{args.service}: after one approval the same user from the same address needs no device for {hours:g} h.\n"
               "(The pass is tied to the user, the service and the client's address, not to the ssh key.)")
     else:
         ended = grants.revoke(service=args.service)
-        print(f"{args.service}: every login asks the phone again." + (f" Ended {ended} pass(es)." if ended else ""))
+        print(f"{args.service}: every login asks the device again." + (f" Ended {ended} pass(es)." if ended else ""))
     return 0
 
 
@@ -459,7 +460,7 @@ def cmd_require(args) -> int:
     _need_root()
     if args.service is None:
         names = grants._load_config().get("require", [])
-        print("Phone required for: " + ", ".join(names) if names else "No service refuses users who have no phone.")
+        print("Device required for: " + ", ".join(names) if names else "No service refuses users who have no device.")
         return 0
     if args.state not in ("on", "off"):
         sys.exit("Say on or off.")
@@ -467,7 +468,7 @@ def cmd_require(args) -> int:
         grants.set_require(args.service, args.state == "on")
     except ValueError as exc:
         sys.exit(str(exc))
-    print(f"{args.service}: a user with no enrolled phone is " + ("refused." if args.state == "on" else "let through (no phone step)."))
+    print(f"{args.service}: a user with no enrolled device is " + ("refused." if args.state == "on" else "let through (no device step)."))
     return 0
 
 
@@ -502,10 +503,10 @@ def cmd_passes(args) -> int:
     _need_root()
     rows = grants.all_passes()
     if not rows:
-        print("No phone pass is active.")
+        print("No device pass is active.")
         return 0
     for p in rows:
-        print(f"{p['user']:<12} {p['service']:<10} from {p['rhost']:<18} {grants.remaining(p):>9} left   phone {p['credential']}")
+        print(f"{p['user']:<12} {p['service']:<10} from {p['rhost']:<18} {grants.remaining(p):>9} left   device {p['credential']}")
     return 0
 
 
@@ -520,46 +521,46 @@ def cmd_end_pass(args) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="thessley-pam")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    e = sub.add_parser("enroll", help="add a phone for a user (default: the user who ran sudo)")
+    e = sub.add_parser("enroll", help="add a device for a user (default: the user who ran sudo)")
     e.add_argument("--user")
     e.add_argument("--port", type=int, default=DEFAULT_PORT)
     e.add_argument("--link", action="store_true", help="also print the link as text (for the desktop app)")
     e.set_defaults(func=cmd_enroll)
-    em = sub.add_parser("enroll-me", help="add your own first phone (run through sudo by a normal user)")
+    em = sub.add_parser("enroll-me", help="add your own first device (run through sudo by a normal user)")
     em.add_argument("--link", action="store_true", help="also print the link as text (for the desktop app)")
     em.set_defaults(func=cmd_enroll_me)
     wb = sub.add_parser("web", help="the admin web page: sign in with a phone approval, manage your keys")
     wb.add_argument("action", nargs="?", choices=("status", "on", "off", "serve", "listen", "port", "session", "cert"))
     wb.add_argument("values", nargs="*")
     wb.set_defaults(func=cmd_web)
-    se = sub.add_parser("self-enroll", help="allow or forbid users adding their own first phone")
+    se = sub.add_parser("self-enroll", help="allow or forbid users adding their own first device")
     se.add_argument("state", nargs="?", choices=("on", "off"))
     se.set_defaults(func=cmd_self_enroll)
-    ls = sub.add_parser("list", help="list a user's phones")
+    ls = sub.add_parser("list", help="list a user's devices")
     ls.add_argument("--user")
     ls.set_defaults(func=cmd_list)
-    rm = sub.add_parser("remove", help="remove one of a user's phones")
+    rm = sub.add_parser("remove", help="remove one of a user's devices")
     rm.add_argument("credential_id")
     rm.add_argument("--user")
     rm.set_defaults(func=cmd_remove)
-    g = sub.add_parser("grace", help="ask the phone once per N hours for a PAM service (e.g. sshd)")
+    g = sub.add_parser("grace", help="ask the device once per N hours for a PAM service (e.g. sshd)")
     g.add_argument("--service")
     g.add_argument("--hours", type=float)
     g.set_defaults(func=cmd_grace)
-    rq = sub.add_parser("require", help="refuse logins by users with no enrolled phone for a PAM service")
+    rq = sub.add_parser("require", help="refuse logins by users with no enrolled device for a PAM service")
     rq.add_argument("--service")
     rq.add_argument("state", nargs="?")
     rq.set_defaults(func=cmd_require)
     sl = sub.add_parser("show-link", help="print the approval link as text under the QR code (for the desktop app)")
     sl.add_argument("state", nargs="?")
     sl.set_defaults(func=cmd_show_link)
-    ps = sub.add_parser("passes", help="list the active phone passes")
+    ps = sub.add_parser("passes", help="list the active device passes")
     ps.set_defaults(func=cmd_passes)
-    ep = sub.add_parser("end-pass", help="end phone passes now")
+    ep = sub.add_parser("end-pass", help="end device passes now")
     ep.add_argument("--user")
     ep.add_argument("--service")
     ep.set_defaults(func=cmd_end_pass)
-    for name, fn, text in (("keyring-link", cmd_keyring_link, "seal the login password so a phone login unlocks the GNOME keyring"),
+    for name, fn, text in (("keyring-link", cmd_keyring_link, "seal the login password so a device login unlocks the GNOME keyring"),
                            ("keyring-forget", cmd_keyring_forget, "delete the sealed password"),
                            ("keyring-status", cmd_keyring_status, "show whether the sealed password can be opened")):
         k = sub.add_parser(name, help=text)

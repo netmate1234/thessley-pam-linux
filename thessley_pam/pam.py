@@ -1,12 +1,12 @@
-"""The PAM step: ask the user's enrolled phone to approve, called by pam_exec after the password.
+"""The PAM step: ask the user's enrolled device to approve, called by pam_exec after the password.
 
 /etc/pam.d/sudo, right after @include common-auth:
 
     auth required pam_exec.so stdout seteuid /usr/local/lib/thessley-pam/pam-helper
 
-Exit 0 only for a valid, signed "approve" from one of the user's enrolled phones. Everything else (deny,
-timeout, bad signature, phone unreachable, any error) exits non-zero, so sudo is refused: strict on purpose.
-A user with no enrolled phone is not affected (exit 0), so the line can't lock out anyone who never opted in.
+Exit 0 only for a valid, signed "approve" from one of the user's enrolled devices. Everything else (deny,
+timeout, bad signature, device unreachable, any error) exits non-zero, so sudo is refused: strict on purpose.
+A user with no enrolled device is not affected (exit 0), so the line can't lock out anyone who never opted in.
 
 Whatever is printed on stdout is shown to the person by sudo (pam_exec's stdout option), line by line.
 """
@@ -60,16 +60,17 @@ WAIT_MARKER = "THESSLEY-WAIT"  # "the code is on screen; I am now waiting for th
 QR_MARKER = "THESSLEY-QR "  # the GNOME Shell extension draws the QR code from this line
 
 
-def run(env: dict, login: bool = False, marker: bool = False, say=None) -> int:
-    """sudo mode (default): a second step after the password; users without a phone pass through.
+def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: float | None = None) -> int:
+    """sudo mode (default): a second step after the password; users without a device pass through.
 
-    login mode (--login, /etc/pam.d/gdm-thessley): the phone *instead of* the password, on the GNOME login
+    login mode (--login, /etc/pam.d/gdm-thessley): the device *instead of* the password, on the GNOME login
     and lock screens, next to the normal password prompt. Nothing else stands between this and a session,
-    so a user without a phone is refused here, never let through.
+    so a user without a device is refused here, never let through.
 
     `say(line)` receives what the person should see (default: print it); the admin web page passes its own.
     """
     say = say or _say
+    wait = WAIT if wait is None else wait  # read now, not at import, so tests (and the web page) can change it
     if env.get("PAM_TYPE") != "auth":
         return REFUSED if login else OK  # gdm-thessley has no other auth step; never succeed by default
     username = env.get("PAM_USER", "")
@@ -82,8 +83,8 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None) -> int:
         return REFUSED
     if not devices:
         if not login and grants.requires_phone(service):
-            say("Thessley Passkey: no phone is enrolled for this account, so this login is refused.")
-            _log(f"no phone for {username} ({service}); refused because a phone is required here", warn=True)
+            say("Thessley Passkey: no device is enrolled for this account, so this login is refused.")
+            _log(f"no device for {username} ({service}); refused because a device is required here", warn=True)
             return REFUSED
         return REFUSED if login else OK
     req_type = "login" if login else "sudo"
@@ -122,11 +123,11 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None) -> int:
             return 400, {"result": "error", "message": "Missing fields."}
         device = by_id.get(cred)
         if device is None:
-            return 403, {"result": "error", "message": "This phone is not enrolled for this user here."}
+            return 403, {"result": "error", "message": "This device is not enrolled for this user here."}
         if action not in ("approve", "deny"):
             return 400, {"result": "error", "message": "Unknown action."}
         if not protocol.timestamp_ok(timestamp):
-            return 400, {"result": "error", "message": "Phone clock is off by more than a minute."}
+            return 400, {"result": "error", "message": "Device clock is off by more than a minute."}
         unsigned = not signature
         if unsigned:
             if action != "deny" or not hmac.compare_digest(str(body.get("nonce", "")), nonce):
@@ -157,19 +158,19 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None) -> int:
             else:
                 qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "2", link],
                                     check=True, capture_output=True, text=True).stdout
-                say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
+                say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {wait:g} s):")
                 if store.show_link():
                     say(f"Link: {link}")  # above the QR code: it stays in view when the code scrolls the screen
                 for line in qr.splitlines():
                     say(line)
             if grace > 0 and not login:
                 # sshd drops text printed after its last question, so say this before the phone is answered.
-                say(f"After you approve, your next login from {rhost} needs no phone for {grace:g} h.")
+                say(f"After you approve, your next login from {rhost} needs no device for {grace:g} h.")
             if marker:
                 # pam_thessley_phone.so (for sshd, which holds back plain text until PAM asks a question) reads
                 # everything up to this line, shows it together with a prompt, and then waits for the exit code.
                 say(WAIT_MARKER)
-            approved_in_time = done.wait(WAIT)
+            approved_in_time = done.wait(wait)
             time.sleep(0.5)  # let the phone receive its reply before the listener closes
     except OSError as e:
         say(f"Thessley Passkey: could not start ({e.strerror}). Refusing.")
@@ -177,11 +178,11 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None) -> int:
         return REFUSED
 
     if not approved_in_time:
-        say("Thessley Passkey: no answer from the phone. Refusing.")
+        say("Thessley Passkey: no answer from the device. Refusing.")
         _log(f"timeout for {username} ({service}, {tty})", warn=True)
         return REFUSED
     if outcome["action"] != "approve":
-        say("Thessley Passkey: denied on the phone.")
+        say("Thessley Passkey: denied on the device.")
         how = ", no fingerprint" if outcome.get("unsigned") else ""
         _log(f"denied by {outcome['label']!r} ({outcome['cred']}{how}) for {username} ({service}, {tty})", warn=True)
         return REFUSED
@@ -193,7 +194,7 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None) -> int:
     if grace > 0:
         try:
             grants.add(username, service, rhost, grace, outcome["cred"])
-            say(f"Thessley Passkey: approved. Your next login from {rhost} needs no phone for {grace:g} h.")
+            say(f"Thessley Passkey: approved. Your next login from {rhost} needs no device for {grace:g} h.")
             _log(f"pass granted to {username} ({service}, from {rhost}, {grace:g} h)")
         except OSError as e:
             _log(f"could not record the pass for {username}: {e}", warn=True)  # the login itself is still approved

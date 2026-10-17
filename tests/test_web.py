@@ -82,6 +82,7 @@ class WebBase(unittest.TestCase):
         pam.PORT = 47850
         cli.DEFAULT_PORT = 47860
         pam.WAIT = 6
+        web.WEB_WAIT, web.WEB_CONFIRM_WAIT, web.WEB_ENROLL_WAIT = 6, 30, 30
         pam._log = lambda *a, **k: None
         self.links = []
         pam.subprocess = types.SimpleNamespace(run=lambda cmd, **kw: (self.links.append(cmd[-1]), types.SimpleNamespace(stdout=""))[1])
@@ -89,7 +90,8 @@ class WebBase(unittest.TestCase):
         web.is_admin = lambda name: self.admin
         self.phone = FakePhone()
         self.device = store.add_device(USER, self.phone.spki, "My phone", [])
-        self.app = web.WebApp(journal=lambda: [], qr=lambda link: b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+        self.logs = []
+        self.app = web.WebApp(journal=lambda: [], qr=lambda link: b"<svg xmlns='http://www.w3.org/2000/svg'/>", log=self.logs.append)
         cert, key = os.path.join(self.tmp.name, "c.pem"), os.path.join(self.tmp.name, "k.pem")
         web.ensure_cert(cert, key, ["127.0.0.1"])
         self.httpd = web.make_server(self.app, "127.0.0.1", 0, cert, key)
@@ -334,6 +336,52 @@ class WebTest(WebBase):
         self.b.post(f"/enroll/{loc.id}/confirm", {"csrf": self.csrf(), "answer": "yes"})
         self.wait_for(self.b, loc.id, lambda s: s.get("next"))
         self.assertEqual(len(store.devices(USER)), 2)
+
+    def test_the_outcome_of_adding_a_device_is_written_to_the_log(self):
+        self.login()
+        self.step_up("/keys/add", {"user": USER})
+        flow = [f for f in self.app.flows.values() if f.kind == "enroll"][0]
+        status = self.wait_for(self.b, flow.id, lambda s: s.get("link"))
+        q = {k: v[0] for k, v in parse_qs(urlparse(status["link"]).query).items()}
+        new = FakePhone()
+        threading.Thread(target=lambda: new.post(q, new.enroll_body(q)), daemon=True).start()
+        self.wait_for(self.b, flow.id, lambda s: s["state"] == "confirm")
+        self.b.post(f"/enroll/{flow.id}/confirm", {"csrf": self.csrf(), "answer": "yes"})
+        self.wait_for(self.b, flow.id, lambda s: s.get("next"))
+        line = [m for m in self.logs if "adding a device" in m][-1]
+        self.assertIn(f"for {USER}", line)
+        self.assertIn(": done (c_", line)
+
+    def test_a_device_that_was_stored_is_never_reported_as_not_added(self):
+        """If anything goes wrong after the device was stored, the page still says it was added."""
+        real = cli._enroll_flow
+        def flaky(user, port, say, ask_yes, **kw):
+            device = real(user, port, say, ask_yes, **kw)
+            raise RuntimeError("something after the device was stored")
+        cli._enroll_flow = flaky
+        self.addCleanup(setattr, cli, "_enroll_flow", real)
+        self.login()
+        self.step_up("/keys/add", {"user": USER})
+        flow = [f for f in self.app.flows.values() if f.kind == "enroll"][0]
+        status = self.wait_for(self.b, flow.id, lambda s: s.get("link"))
+        q = {k: v[0] for k, v in parse_qs(urlparse(status["link"]).query).items()}
+        new = FakePhone()
+        threading.Thread(target=lambda: new.post(q, new.enroll_body(q)), daemon=True).start()
+        self.wait_for(self.b, flow.id, lambda s: s["state"] == "confirm")
+        self.b.post(f"/enroll/{flow.id}/confirm", {"csrf": self.csrf(), "answer": "yes"})
+        final = self.wait_for(self.b, flow.id, lambda s: s.get("next") or s["state"] == "failed")
+        self.assertTrue(final.get("next"), final)
+        self.assertEqual(len(store.devices(USER)), 2)
+
+    def test_each_way_of_not_adding_a_device_says_which_it_was(self):
+        for lines, expected in ((["Timed out. Nothing was added."], "No device answered"),
+                                (["Not added."], "not confirmed in time or did not match"),
+                                (["Cancelled. Nothing was added."], "cancelled"),
+                                (["error: OSError()"], "Something went wrong"),
+                                ([], "was not added")):
+            f = web.Flow("enroll", USER)
+            f.lines = lines
+            self.assertIn(expected, web.make_handler(self.app).failure_text(f))
 
     def test_the_codes_not_matching_adds_nothing(self):
         self.login()
