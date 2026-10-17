@@ -44,6 +44,23 @@ device approve).
 Settings: `vpn public-host NAME`, `vpn page-port N`, `vpn wait SECONDS` (approval window, default 180), `vpn group GROUP` (who
 may use the daemon's socket: OpenVPN's group; default `nogroup`).
 
+## Enrol your phone or desktop app for the VPN
+
+The apps accept an approval link only for a computer on the local network, because a QR code is untrusted input. A VPN login
+comes from the internet, so it carries a **public** host. To let the apps answer it, enrol them for the VPN **once, on the
+computer's own network**:
+
+    sudo thessley-pam vpn public-host vpn.example.org
+    sudo thessley-pam vpn enroll [ACCOUNT]            # the usual enrolment: a QR code and a code you compare
+
+The enrolment link also carries the public host, and the app stores it with the computer ("This also lets this phone approve VPN
+logins ... from vpn.example.org"). From then on the app answers a `vpn` request only if its host is **exactly** that one, a
+refusal included. A VPN approval for any other address is never contacted, and an app that was enrolled in the ordinary way
+(`thessley-pam enroll`) says how to enrol for the VPN instead. A VPN approval is signed as type `vpn`, so it can never be replayed
+as a sudo or ssh approval.
+
+If you change `public-host`, enrol again.
+
 ## OpenVPN server (`/etc/openvpn/server/thessley.conf`)
 
     port 1194
@@ -103,4 +120,4 @@ first real connection is the check that your OpenVPN version and client honour t
 
 - Each approval is for one connection. Set `sudo thessley-pam grace --service openvpn --hours 4` and the same account from the
   same address needs no new approval for 4 h.
-- The apps will show the request as the service `openvpn`; a wording of its own ("VPN login") is still to be added there.
+- The apps show it as "Approve VPN login".
