@@ -83,7 +83,7 @@ Make the certificates with easy-rsa (or any CA). One client certificate per devi
     dev tun
     proto udp
     remote vpn.example.org 1194
-    remote-cert-tls client
+    remote-cert-tls server        # the client checks the SERVER's certificate (the server file says: client)
     auth-user-pass          # user name: alice (the certificate name); password: anything, it is not checked
     auth-nocache
     <ca> ... </ca>

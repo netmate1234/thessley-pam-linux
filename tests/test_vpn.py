@@ -145,6 +145,31 @@ class DaemonTest(VpnBase):
         self.assertEqual(runner_calls[0]["PAM_SERVICE"], "openvpn")
 
 
+class PortsTest(unittest.TestCase):
+    def test_the_vpn_uses_only_the_forwarded_approval_port_by_default(self):
+        old = pam.PORT, pam.PORT_TRIES
+        try:
+            vpn.apply_ports(vpn.grants.vpn_settings())
+            self.assertEqual((pam.PORT, pam.PORT_TRIES), (47810, 1))
+            vpn.apply_ports({"approval_port": 47850, "approval_tries": 3})
+            self.assertEqual((pam.PORT, pam.PORT_TRIES), (47850, 3))
+        finally:
+            pam.PORT, pam.PORT_TRIES = old
+
+    def test_a_busy_forwarded_port_is_a_refusal_not_a_port_nobody_can_reach(self):
+        # port taken by another approval: with one try the next-free-port walk must not happen
+        import socket as _s
+        hog = _s.socket()
+        hog.bind(("127.0.0.1", 0))
+        hog.listen()
+        port = hog.getsockname()[1]
+        self.addCleanup(hog.close)
+        from thessley_pam import listener
+        with self.assertRaises(OSError):
+            with listener.listening("127.0.0.1", {}, port, 1):
+                pass
+
+
 class ScriptTest(VpnBase):
     """OpenVPN's auth-user-pass-verify: exit codes and the files it writes."""
 

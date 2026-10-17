@@ -249,9 +249,17 @@ def make_page_server(approvals: Approvals, ip: str, port: int, cert: str, key: s
     return httpd
 
 
+def apply_ports(st: dict) -> None:
+    """The device reaches this computer through the router, which forwards only some ports: use exactly those. The ssh and
+    sudo approvals walk up from 47810 to the next free port; here that would pick a port nobody can reach, so the default is the
+    one forwarded port and a busy port is a clean refusal ("address already in use"), not a device that cannot connect."""
+    pam.PORT, pam.PORT_TRIES = st["approval_port"], st["approval_tries"]
+
+
 def serve() -> int:
     from . import web
     st = grants.vpn_settings()
+    apply_ports(st)
     if not st["enabled"]:
         print("The VPN approval is switched off (sudo thessley-pam vpn on).")
         return 0
