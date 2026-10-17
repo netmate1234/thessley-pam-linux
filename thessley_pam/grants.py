@@ -86,6 +86,41 @@ def set_self_enroll(on: bool) -> None:
 WEB_DEFAULTS = {"enabled": False, "listen": "", "port": 47820, "session_minutes": 15, "cert": "", "key": ""}
 
 
+VPN_DEFAULTS = {"enabled": False, "public_host": "", "page_port": 47830, "socket_group": "nogroup", "wait": 180}
+
+
+def vpn_settings() -> dict:
+    """The OpenVPN second step's settings (thessley-pam vpn ...). public_host is the name or address the device is told to
+    connect to for the approval (the router forwards it to this computer); page_port is the public QR page."""
+    out = dict(VPN_DEFAULTS)
+    try:
+        raw = _load_config().get("vpn", {})
+        if isinstance(raw, dict):
+            out.update({k: v for k, v in raw.items() if k in VPN_DEFAULTS})
+    except (TypeError, AttributeError):
+        pass
+    try:
+        out["page_port"] = min(max(int(out["page_port"]), 1), 65535)
+        out["wait"] = min(max(int(out["wait"]), 30), 600)
+    except (TypeError, ValueError):
+        out["page_port"], out["wait"] = VPN_DEFAULTS["page_port"], VPN_DEFAULTS["wait"]
+    out["enabled"] = bool(out["enabled"])
+    return out
+
+
+def set_vpn(**changes) -> dict:
+    unknown = set(changes) - set(VPN_DEFAULTS)
+    if unknown:
+        raise ValueError(f"unknown vpn setting: {sorted(unknown)}")
+    store.ensure_dirs()
+    data = _load_config()
+    vpn = data.get("vpn") if isinstance(data.get("vpn"), dict) else {}
+    vpn.update(changes)
+    data["vpn"] = vpn
+    _atomic_write(_config_path(), data, store.BASE)
+    return vpn_settings()
+
+
 def web_settings() -> dict:
     """The admin web page's settings (thessley-pam web ...). listen "" means this computer's LAN address."""
     out = dict(WEB_DEFAULTS)

@@ -105,6 +105,10 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
 
     by_id = {d["credential_id"]: d for d in devices}
     mid, host, ip = machine.machine_id(), machine.hostname(), machine.lan_ip()
+    # The device may have to reach this computer by another name than its LAN address (a VPN login comes from the internet,
+    # through the router). The listener still binds the LAN address; only the link says where to connect. Set by the
+    # trusted caller (the VPN daemon reads it from root's own settings), never taken from a user.
+    link_host = env.get("PAM_PUBLIC_HOST") or ip
     request_id = secrets.token_urlsafe(12)
     nonce = secrets.token_urlsafe(16)
     done = threading.Event()
@@ -148,7 +152,7 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
     try:
         with _listening(ip, {path: respond}) as lst:
             link = f"thessleypam://{req_type}?" + urlencode({
-                "h": ip, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
+                "h": link_host, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
                 "m": mid, "hn": host, "u": username, "tty": tty,
                 **_display_fields(service, rhost),
             })
@@ -159,7 +163,7 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
                 qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "2", link],
                                     check=True, capture_output=True, text=True).stdout
                 say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {wait:g} s):")
-                if store.show_link():
+                if store.show_link() or env.get("PAM_ALWAYS_LINK"):
                     say(f"Link: {link}")  # above the QR code: it stays in view when the code scrolls the screen
                 for line in qr.splitlines():
                     say(line)
