@@ -309,7 +309,29 @@ def _write(path: str, text: str) -> None:
         f.write(text)
 
 
-def authenticate(env, sock_path: str = SOCKET, fork=os.fork, log=lambda text: print(text, file=sys.stderr)) -> int:
+def _log_default(text: str) -> None:
+    print(text, file=sys.stderr)
+    try:
+        import syslog
+        syslog.openlog("thessley-pam-vpn", syslog.LOG_PID, syslog.LOG_AUTHPRIV)
+        syslog.syslog(syslog.LOG_INFO, text)   # in the journal: journalctl -t thessley-pam-vpn
+    except Exception:  # noqa: BLE001 - logging must never break a login
+        pass
+
+
+def pending_method(env, url: str) -> tuple[str, str] | None:
+    """How to tell this client to open the approval page, from the ways it says it can (IV_SSO, which OpenVPN gives the script):
+    "openurl" (the OpenVPN 2.6 command line client, when set) or "webauth" (OpenVPN Connect, flag `external`: the system browser,
+    where the page's "Open in the Thessley app" button can start the app). A client that lists neither cannot show a page."""
+    offered = {m.strip().lower() for m in env.get("IV_SSO", "").split(",") if m.strip()}
+    if not offered or "openurl" in offered:      # nothing known: the OpenVPN default
+        return "openurl", url
+    if "webauth" in offered:
+        return "webauth", "external:" + url
+    return None
+
+
+def authenticate(env, sock_path: str = SOCKET, fork=os.fork, log=_log_default) -> int:
     """auth-user-pass-verify (via-env). 0 = accept, 1 = reject, 2 = deferred (a child finishes it)."""
     user, cn, rhost = env.get("username", ""), env.get("common_name", ""), env.get("untrusted_ip", "") or env.get("untrusted_ip6", "")
     control, pending, reason_file = env.get("auth_control_file"), env.get("auth_pending_file"), env.get("auth_failed_reason_file")
@@ -327,6 +349,10 @@ def authenticate(env, sock_path: str = SOCKET, fork=os.fork, log=lambda text: pr
         return refuse("not an account name")
     if cn != user:
         return refuse(f"the certificate belongs to {cn!r}, not to {user!r}")
+    if control and pending and pending_method(env, "x") is None:
+        # before anything starts: an approval that nobody can see would hold the one approval port for its whole window
+        log(f"approval page for {user} from {rhost}: client offers IV_SSO={env.get('IV_SSO', '')!r}, method none")
+        return refuse("this VPN client cannot show a web page (it offers: " + env.get("IV_SSO", "") + ")")
     try:
         conn = socket.socket(socket.AF_UNIX)
         conn.settimeout(300)
@@ -349,7 +375,11 @@ def authenticate(env, sock_path: str = SOCKET, fork=os.fork, log=lambda text: pr
             # An OpenVPN without deferred authentication: hold the connection and wait here.
             msg = read()
             return 0 if msg.get("done") and msg.get("ok") is True else refuse(str(msg.get("reason") or "refused"))
-        _write(pending, f"{timeout}\nopenurl\n{url}\n")
+        chosen = pending_method(env, url)
+        log(f"approval page for {user} from {rhost}: client {env.get('IV_GUI_VER') or env.get('IV_PLAT') or '?'} offers "
+            f"IV_SSO={env.get('IV_SSO', '(not given)')!r}, method {chosen[0] if chosen else 'none'}")
+        method, extra = chosen   # not None: refused above, before the approval started
+        _write(pending, f"{timeout}\n{method}\n{extra}\n")
         pid = fork()
     except (OSError, ValueError) as exc:
         return refuse(f"cannot reach the approval daemon ({exc})")

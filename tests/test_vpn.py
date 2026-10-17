@@ -252,6 +252,28 @@ class ScriptTest(VpnBase):
         self.assertTrue(url.startswith("https://vpn.example.org:47831/vpn/"))
         self.assertFalse(os.path.exists(env["auth_control_file"]))        # nothing decided yet
 
+    def test_the_method_follows_what_the_client_offers(self):
+        url = "https://vpn.example.org:47831/vpn/abc"
+        self.assertEqual(vpn.pending_method({}, url), ("openurl", url))                                  # nothing known
+        self.assertEqual(vpn.pending_method({"IV_SSO": "openurl,crtext"}, url), ("openurl", url))
+        # OpenVPN Connect 3.7.1 on Android offers "webauth,crtext": the page must open in the system browser
+        self.assertEqual(vpn.pending_method({"IV_SSO": "webauth,crtext"}, url), ("webauth", "external:" + url))
+        self.assertEqual(vpn.pending_method({"IV_SSO": "WebAuth"}, url), ("webauth", "external:" + url))
+        self.assertEqual(vpn.pending_method({"IV_SSO": "openurl,webauth"}, url), ("openurl", url))       # the first-class one
+        self.assertIsNone(vpn.pending_method({"IV_SSO": "crtext"}, url))                                 # it cannot show a page
+
+    def test_a_connect_client_gets_a_webauth_pending_file_and_a_crtext_only_client_is_refused(self):
+        env = self.env(IV_SSO="webauth,crtext", IV_GUI_VER="net.openvpn.connect.android_3.7.1")
+        self.assertEqual(vpn.authenticate(env, self.sock_path, fork=lambda: 4242, log=lambda t: None), 2)
+        timeout, method, extra = open(env["auth_pending_file"]).read().split("\n")[:3]
+        self.assertEqual(method, "webauth")
+        self.assertTrue(extra.startswith("external:https://vpn.example.org:47831/vpn/"), extra)
+        env2 = self.env(IV_SSO="crtext", auth_pending_file=os.path.join(self.tmp.name, "apf2"))
+        before = len(self.approvals.flows)
+        self.assertEqual(vpn.authenticate(env2, self.sock_path, fork=lambda: 4242, log=lambda t: None), 1)
+        self.assertIn("cannot show a web page", open(env2["auth_failed_reason_file"]).read())
+        self.assertEqual(len(self.approvals.flows), before)      # no approval was started for it
+
     def test_the_child_writes_1_for_an_approval_and_0_with_the_reason_for_a_refusal(self):
         control, reason = os.path.join(self.tmp.name, "c1"), os.path.join(self.tmp.name, "r1")
         self.assertTrue(vpn.finish(lambda: {"done": True, "ok": True}, control, reason))
