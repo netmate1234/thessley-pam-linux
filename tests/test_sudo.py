@@ -194,6 +194,33 @@ class LoginTest(SudoTest):
         with open(store.ENROLLED) as f:
             self.assertEqual(f.read(), "")
 
+    def test_enrolled_list_in_a_read_only_directory_is_written_in_place(self):
+        # the admin web service: /etc read-only, only the list file itself writable
+        import tempfile
+        real = tempfile.mkstemp
+        def no_temp(*a, **k):
+            if k.get("prefix") == ".thessley-pam-enrolled.":
+                raise OSError(30, "Read-only file system")
+            return real(*a, **k)
+        tempfile.mkstemp = no_temp
+        try:
+            store.remove_device(USER, self.device["credential_id"])
+        finally:
+            tempfile.mkstemp = real
+        with open(store.ENROLLED) as f:
+            self.assertEqual(f.read(), "")
+
+    def test_a_failing_list_write_does_not_fail_the_key_change(self):
+        old = store.write_enrolled_list
+        def boom():
+            raise OSError(30, "Read-only file system")
+        store.write_enrolled_list = boom
+        try:
+            store.remove_device(USER, self.device["credential_id"])   # must not raise
+        finally:
+            store.write_enrolled_list = old
+        self.assertEqual(store.devices(USER), [])
+
 
 def _post(q, path, body):
     import hashlib

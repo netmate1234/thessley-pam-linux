@@ -29,12 +29,14 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=/etc/thessley-pam
+ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 chmod 0644 "$unit"
+# The unit may write this one file (the login-screen list); it has to exist for the sandbox to map it.
+[ -e /etc/thessley-pam-enrolled ] || install -m 0644 /dev/null /etc/thessley-pam-enrolled
 systemctl daemon-reload
 echo "Installed $unit (not started)."
 echo "Start it with:  sudo thessley-pam web on"

@@ -194,6 +194,8 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
         pending.put({"client_ip": client_ip, "public_key": public_key, "label": label, "chain": chain,
                      "attestation": attestation})
         if not decided.wait(confirm_wait + 10) or not decision.get("ok"):
+            if decision.get("error"):
+                return 500, {"result": "error", "message": "The computer could not save this device: " + decision["error"]}
             return 200, {"result": "denied", "message": "Not confirmed on the computer."}
         return 200, {"result": "ok", "credential_id": decision["credential_id"], "username": username,
                      "hostname": host, "attestation": "tpm" if (attestation or {}).get("level") == "tpm" else ""}
@@ -232,10 +234,15 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
             say("    TPM:   " + (f"verified, a genuine TPM 2.0 chip ({(att['maker'] + ' ' + att['model']).strip() or 'maker not named'})"
                                  if att["level"] == "tpm" else f"claimed but NOT verified ({att['reason']})") + "\n")
         ok = ask_yes("Does the device show the same code? Type yes to add it: ", confirm_wait)
-        if ok:
-            device = store.add_device(username, item["public_key"], item["label"], item["chain"], item.get("attestation"))
-            decision.update(ok=True, credential_id=device["credential_id"])
-        decided.set()
+        try:
+            if ok:
+                device = store.add_device(username, item["public_key"], item["label"], item["chain"], item.get("attestation"))
+                decision.update(ok=True, credential_id=device["credential_id"])
+        except OSError as e:
+            decision["error"] = str(e)
+            say(f"Could not save the device: {e}")
+        finally:
+            decided.set()  # always answer the device, or it waits for the full timeout
         # Let the phone's request receive its answer before the listener shuts down.
         threading.Event().wait(1.5)
 

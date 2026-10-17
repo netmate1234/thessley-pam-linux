@@ -69,7 +69,12 @@ def save(username: str, data: dict) -> None:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
-    write_enrolled_list()
+    try:
+        write_enrolled_list()
+    except OSError as e:
+        # Only the login-screen hint; the key change itself is already saved, so don't report it as failed.
+        import sys
+        print(f"thessley-pam: could not update {ENROLLED}: {e}", file=sys.stderr)
 
 
 def write_enrolled_list() -> None:
@@ -80,9 +85,17 @@ def write_enrolled_list() -> None:
         with open(os.path.join(USERS, entry)) as f:
             if any(not d.get("disabled") for d in json.load(f).get("devices", [])):
                 names.append(entry[:-5])
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".thessley-pam-enrolled.")
+    text = "".join(n + "\n" for n in names)
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".thessley-pam-enrolled.")
+    except OSError:
+        # The admin web service sees /etc read-only except this one file (ReadWritePaths), so it can't make a
+        # temp file next to it; rewrite the file in place instead. It is tiny, so a torn read is not a concern.
+        with open(ENROLLED, "w") as f:
+            f.write(text)
+        return
     with os.fdopen(fd, "w") as f:
-        f.write("".join(n + "\n" for n in names))
+        f.write(text)
     os.chmod(tmp, 0o644)
     os.replace(tmp, ENROLLED)
 
