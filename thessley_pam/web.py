@@ -630,9 +630,10 @@ def page(title: str, body: str, nonce: str, session: Session | None = None, admi
     who = f'<span class="dim">Signed in as {esc(session.user)}</span>' if session else ""
     # On every page: opens the Thessley Passkey app on the computer or phone this browser runs on (no request needed).
     opener = '<a class="btn small" href="thessleypam://open">Open the Thessley app</a>'
+    host = machine.hostname()  # which computer these keys are for (the address in the browser may be a tunnel's)
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{esc(title)} · Thessley keys</title><style>{CSS}</style></head><body><main>'
-            f'<header><h1>Thessley keys</h1><span style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">{who}{opener}</span></header>{nav}{body}</main></body></html>')
+            f'<title>{esc(title)} · Thessley Passkeys for {esc(host)}</title><style>{CSS}</style></head><body><main>'
+            f'<header><h1>Thessley Passkeys for {esc(host)}</h1><span style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">{who}{opener}</span></header>{nav}{body}</main></body></html>')
 
 
 def flash_html(text: str) -> str:

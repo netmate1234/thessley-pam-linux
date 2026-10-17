@@ -17,6 +17,19 @@ one `web status` prints before you accept. For a certificate your browsers alrea
 Settings (all `sudo thessley-pam web ...`): `listen ADDRESS` (default: this computer's LAN address; `0.0.0.0` listens
 everywhere, only for networks you trust), `port N` (47820), `session MINUTES` (15 idle, 8 h at most).
 
+## Keep the page off the network (ssh tunnel)
+
+The page can listen on this computer only, so nothing on the network can reach it, and you open it through an ssh
+tunnel (your ssh login is approved with a device too). Approvals are not affected: the device talks to the short-lived
+listener on this computer's LAN address (ports 47810-47819), never to the page, so the QR code and the link work as before.
+
+    sudo thessley-pam web listen 127.0.0.1
+    sudo thessley-pam web on                       (restarts the page with the new address)
+    ssh -N -L 127.0.0.1:47821:127.0.0.1:47820 user@this-computer      (on your own computer; leave it running)
+
+Then open `https://127.0.0.1:47821/` (the certificate is self-signed, so the browser warns once). To go back to the LAN
+address: `sudo thessley-pam web listen auto`. Every page says which computer it is for ("Thessley Passkeys for computer-name").
+
 ## What you can do
 
 - **Sign in.** Type your account name. The page shows a QR code and a text link, like an ssh login: approve it with your
