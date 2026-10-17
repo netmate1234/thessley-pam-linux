@@ -83,6 +83,40 @@ def set_self_enroll(on: bool) -> None:
     _atomic_write(_config_path(), data, store.BASE)
 
 
+WEB_DEFAULTS = {"enabled": False, "listen": "", "port": 47820, "session_minutes": 15, "cert": "", "key": ""}
+
+
+def web_settings() -> dict:
+    """The admin web page's settings (thessley-pam web ...). listen "" means this computer's LAN address."""
+    out = dict(WEB_DEFAULTS)
+    try:
+        raw = _load_config().get("web", {})
+        if isinstance(raw, dict):
+            out.update({k: v for k, v in raw.items() if k in WEB_DEFAULTS})
+    except (TypeError, AttributeError):
+        pass
+    try:
+        out["port"] = min(max(int(out["port"]), 1), 65535)
+        out["session_minutes"] = min(max(int(out["session_minutes"]), 1), 240)
+    except (TypeError, ValueError):
+        out["port"], out["session_minutes"] = WEB_DEFAULTS["port"], WEB_DEFAULTS["session_minutes"]
+    out["enabled"] = bool(out["enabled"])
+    return out
+
+
+def set_web(**changes) -> dict:
+    unknown = set(changes) - set(WEB_DEFAULTS)
+    if unknown:
+        raise ValueError(f"unknown web setting: {sorted(unknown)}")
+    store.ensure_dirs()
+    data = _load_config()
+    web = data.get("web") if isinstance(data.get("web"), dict) else {}
+    web.update(changes)
+    data["web"] = web
+    _atomic_write(_config_path(), data, store.BASE)
+    return web_settings()
+
+
 def set_require(service: str, on: bool) -> None:
     if not service or any(c in service for c in "/ \t\n\0") or service.startswith("."):
         raise ValueError("bad service name")

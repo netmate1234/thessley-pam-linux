@@ -8,6 +8,7 @@
     sudo thessley-pam show-link [on|off]             print each approval's link as text (on by default)
     sudo thessley-pam enroll-me [--link]            a user adds a phone for their own account (see install-selfenroll.sh)
     sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd phone needs the 1st to approve
+    sudo thessley-pam web [status|on|off|serve|listen ADDR|port N|session MIN|cert FILE KEY]   the admin web page (web.py)
     sudo thessley-pam passes                            who holds a phone pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a phone login unlock the GNOME keyring (see keyring.py)
@@ -82,9 +83,21 @@ def cmd_enroll(args) -> int:
     if tty is None:
         sys.exit("Run this in a terminal: you will be asked to type yes to confirm the phone.")
     tty.close()
+    # The helpers are looked up when called, so a test (or another front end) can replace them.
+    device = _enroll_flow(username, args.port, say=lambda text: print(text, flush=True),
+                          ask_yes=lambda prompt, timeout: _ask_yes(prompt, timeout), show_qr=lambda link: _show_qr(link))
+    return 0 if device else 1
+
+
+def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: threading.Event | None = None):
+    """Add one phone for `username`: show the link (and QR), wait for the phone, show the pairing code, ask whether the
+    codes match. Returns the stored device, or None. Used by the command line (say = print, ask_yes = a prompt on the
+    terminal) and by the admin web page (say collects lines for the page, ask_yes waits for a button, cancel is set
+    when the person leaves the page)."""
     mid, host, ip = machine.machine_id(), machine.hostname(), machine.lan_ip()
     request_id = secrets.token_urlsafe(12)
     nonce = secrets.token_urlsafe(16)
+    cancel = cancel or threading.Event()
 
     pending: queue.Queue = queue.Queue(maxsize=1)  # the one verified phone waiting for the person's yes/no
     decided = threading.Event()
@@ -117,27 +130,34 @@ def cmd_enroll(args) -> int:
                      "hostname": host}
 
     path = f"/thessley-pam/v1/enroll/{request_id}/respond"
-    with listener.listening(ip, {path: respond}, args.port) as lst:
+    device = None
+    with listener.listening(ip, {path: respond}, port) as lst:
         link = "thessleypam://enroll?" + urlencode({
             "h": ip, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
             "m": mid, "hn": host, "u": username,
         })
-        print(f"\nAdd a phone that may approve logins for '{username}' on {host}.\n")
-        print(f"Link: {link}\n")  # always: for the desktop app, or a phone that cannot scan this screen
-        _show_qr(link)
-        print(f"In Thessley Passkey: Scan QR code. Valid for {ENROLL_WAIT // 60} minutes. Ctrl+C to cancel.",
-              flush=True)
+        say(f"\nAdd a phone that may approve logins for '{username}' on {host}.\n")
+        say(f"Link: {link}\n")  # always: for the desktop app, or a phone that cannot scan this screen
+        if show_qr:
+            show_qr(link)
+        say(f"In Thessley Passkey: Scan QR code. Valid for {ENROLL_WAIT // 60} minutes. Ctrl+C to cancel.")
 
-        try:
-            item = pending.get(timeout=ENROLL_WAIT)
-        except queue.Empty:
-            print("Timed out. Nothing was added.")
-            return 1
+        item = None
+        waited = 0.0
+        while item is None and waited < ENROLL_WAIT and not cancel.is_set():
+            try:
+                item = pending.get(timeout=1)
+            except queue.Empty:
+                waited += 1
+        if item is None:
+            decided.set()
+            say("Cancelled. Nothing was added." if cancel.is_set() else "Timed out. Nothing was added.")
+            return None
 
         code = protocol.pairing_code(item["public_key"])
-        print(f"\nPhone '{item['label']}' ({item['client_ip']}) answered.")
-        print(f"\n    Code:  {code}\n")
-        ok = _ask_yes("Does the phone show the same code? Type yes to add it: ", CONFIRM_WAIT)
+        say(f"\nPhone '{item['label']}' ({item['client_ip']}) answered.")
+        say(f"\n    Code:  {code}\n")
+        ok = ask_yes("Does the phone show the same code? Type yes to add it: ", CONFIRM_WAIT)
         if ok:
             device = store.add_device(username, item["public_key"], item["label"], item["chain"])
             decision.update(ok=True, credential_id=device["credential_id"])
@@ -145,11 +165,11 @@ def cmd_enroll(args) -> int:
         # Let the phone's request receive its answer before the listener shuts down.
         threading.Event().wait(1.5)
 
-    if ok:
-        print(f"Added '{item['label']}' as {decision['credential_id']} for {username}.")
-        return 0
-    print("Not added.")
-    return 1
+    if device:
+        say(f"Added '{item['label']}' as {device['credential_id']} for {username}.")
+        return device
+    say("Not added.")
+    return None
 
 
 def self_enroll_route(username: str | None) -> tuple[str | None, str]:
@@ -198,6 +218,54 @@ def cmd_enroll_me(args) -> int:
             return 1
         print("Approved. Now add the new phone.")
     return cmd_enroll(argparse.Namespace(user=username, port=DEFAULT_PORT, link=getattr(args, "link", False)))
+
+
+def cmd_web(args) -> int:
+    action, values = args.action or "status", args.values
+    if action == "serve":
+        from . import web
+        return web.serve()
+    _need_root()
+    st = grants.web_settings()
+    if action in ("on", "off"):
+        grants.set_web(enabled=(action == "on"))
+        if os.path.exists("/etc/systemd/system/thessley-pam-web.service"):
+            subprocess.run(["systemctl", "enable" if action == "on" else "disable", "--now", "thessley-pam-web"],
+                           capture_output=True, check=False)
+            if action == "on":  # a restart picks up any new settings
+                subprocess.run(["systemctl", "restart", "thessley-pam-web"], capture_output=True, check=False)
+        elif action == "on":
+            print("The service is not installed yet: run  sudo ./install-web.sh  (then it starts on its own).")
+        st = grants.web_settings()
+    elif action == "listen":
+        grants.set_web(listen=(values[0] if values and values[0] not in ("auto", "lan") else ""))
+        st = grants.web_settings()
+    elif action in ("port", "session"):
+        if len(values) != 1 or not values[0].isdigit():
+            sys.exit(f"Usage: thessley-pam web {action} NUMBER")
+        grants.set_web(**({"port": int(values[0])} if action == "port" else {"session_minutes": int(values[0])}))
+        st = grants.web_settings()
+    elif action == "cert":
+        if len(values) != 2:
+            sys.exit("Usage: thessley-pam web cert CERT_FILE KEY_FILE   (a certificate your browsers trust)")
+        grants.set_web(cert=values[0], key=values[1])
+        st = grants.web_settings()
+    elif action != "status":
+        sys.exit("Say status, on, off, serve, listen, port, session or cert.")
+    from . import web
+    ip = st["listen"] or machine.lan_ip()
+    cert, key = (st["cert"], st["key"]) if st["cert"] and st["key"] else web.default_cert_paths()
+    print(f"Admin web page: {'ON' if st['enabled'] else 'off'}   https://{ip}:{st['port']}/   (sessions end after {st['session_minutes']} min idle)")
+    if os.path.exists(cert):
+        import hashlib
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+        with open(cert, "rb") as f:
+            der = x509.load_pem_x509_certificate(f.read()).public_bytes(serialization.Encoding.DER)
+        print(f"Certificate SHA-256: {hashlib.sha256(der).hexdigest()}")
+    if st["listen"] in ("0.0.0.0", "::"):
+        print("It listens on every network address: make sure only networks you trust can reach this port.")
+    return 0
 
 
 def cmd_self_enroll(args) -> int:
@@ -384,6 +452,10 @@ def main(argv=None) -> int:
     em = sub.add_parser("enroll-me", help="add your own first phone (run through sudo by a normal user)")
     em.add_argument("--link", action="store_true", help="also print the link as text (for the desktop app)")
     em.set_defaults(func=cmd_enroll_me)
+    wb = sub.add_parser("web", help="the admin web page: sign in with a phone approval, manage your keys")
+    wb.add_argument("action", nargs="?", choices=("status", "on", "off", "serve", "listen", "port", "session", "cert"))
+    wb.add_argument("values", nargs="*")
+    wb.set_defaults(func=cmd_web)
     se = sub.add_parser("self-enroll", help="allow or forbid users adding their own first phone")
     se.add_argument("state", nargs="?", choices=("on", "off"))
     se.set_defaults(func=cmd_self_enroll)

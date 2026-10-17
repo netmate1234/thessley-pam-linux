@@ -60,13 +60,16 @@ WAIT_MARKER = "THESSLEY-WAIT"  # "the code is on screen; I am now waiting for th
 QR_MARKER = "THESSLEY-QR "  # the GNOME Shell extension draws the QR code from this line
 
 
-def run(env: dict, login: bool = False, marker: bool = False) -> int:
+def run(env: dict, login: bool = False, marker: bool = False, say=None) -> int:
     """sudo mode (default): a second step after the password; users without a phone pass through.
 
     login mode (--login, /etc/pam.d/gdm-thessley): the phone *instead of* the password, on the GNOME login
     and lock screens, next to the normal password prompt. Nothing else stands between this and a session,
     so a user without a phone is refused here, never let through.
+
+    `say(line)` receives what the person should see (default: print it); the admin web page passes its own.
     """
+    say = say or _say
     if env.get("PAM_TYPE") != "auth":
         return REFUSED if login else OK  # gdm-thessley has no other auth step; never succeed by default
     username = env.get("PAM_USER", "")
@@ -79,7 +82,7 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
         return REFUSED
     if not devices:
         if not login and grants.requires_phone(service):
-            _say("Thessley Passkey: no phone is enrolled for this account, so this login is refused.")
+            say("Thessley Passkey: no phone is enrolled for this account, so this login is refused.")
             _log(f"no phone for {username} ({service}); refused because a phone is required here", warn=True)
             return REFUSED
         return REFUSED if login else OK
@@ -95,7 +98,7 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
         except OSError:
             held = None
         if held:
-            _say(f"Thessley Passkey: approved earlier, valid for another {grants.remaining(held)}.")
+            say(f"Thessley Passkey: approved earlier, valid for another {grants.remaining(held)}.")
             _log(f"pass used for {username} ({service}, from {rhost}, {grants.remaining(held)} left)")
             return OK
 
@@ -150,35 +153,35 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
             })
             if login:
                 # GNOME shows no text art; the extension turns this one line into a QR code.
-                _say(QR_MARKER + link)
+                say(QR_MARKER + link)
             else:
                 qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "2", link],
                                     check=True, capture_output=True, text=True).stdout
-                _say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
+                say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {WAIT} s):")
                 if store.show_link():
-                    _say(f"Link: {link}")  # above the QR code: it stays in view when the code scrolls the screen
+                    say(f"Link: {link}")  # above the QR code: it stays in view when the code scrolls the screen
                 for line in qr.splitlines():
-                    _say(line)
+                    say(line)
             if grace > 0 and not login:
                 # sshd drops text printed after its last question, so say this before the phone is answered.
-                _say(f"After you approve, your next login from {rhost} needs no phone for {grace:g} h.")
+                say(f"After you approve, your next login from {rhost} needs no phone for {grace:g} h.")
             if marker:
                 # pam_thessley_phone.so (for sshd, which holds back plain text until PAM asks a question) reads
                 # everything up to this line, shows it together with a prompt, and then waits for the exit code.
-                _say(WAIT_MARKER)
+                say(WAIT_MARKER)
             approved_in_time = done.wait(WAIT)
             time.sleep(0.5)  # let the phone receive its reply before the listener closes
     except OSError as e:
-        _say(f"Thessley Passkey: could not start ({e.strerror}). Refusing.")
+        say(f"Thessley Passkey: could not start ({e.strerror}). Refusing.")
         _log(f"listener failed for {username}: {e}", warn=True)
         return REFUSED
 
     if not approved_in_time:
-        _say("Thessley Passkey: no answer from the phone. Refusing.")
+        say("Thessley Passkey: no answer from the phone. Refusing.")
         _log(f"timeout for {username} ({service}, {tty})", warn=True)
         return REFUSED
     if outcome["action"] != "approve":
-        _say("Thessley Passkey: denied on the phone.")
+        say("Thessley Passkey: denied on the phone.")
         how = ", no fingerprint" if outcome.get("unsigned") else ""
         _log(f"denied by {outcome['label']!r} ({outcome['cred']}{how}) for {username} ({service}, {tty})", warn=True)
         return REFUSED
@@ -190,7 +193,7 @@ def run(env: dict, login: bool = False, marker: bool = False) -> int:
     if grace > 0:
         try:
             grants.add(username, service, rhost, grace, outcome["cred"])
-            _say(f"Thessley Passkey: approved. Your next login from {rhost} needs no phone for {grace:g} h.")
+            say(f"Thessley Passkey: approved. Your next login from {rhost} needs no phone for {grace:g} h.")
             _log(f"pass granted to {username} ({service}, from {rhost}, {grace:g} h)")
         except OSError as e:
             _log(f"could not record the pass for {username}: {e}", warn=True)  # the login itself is still approved

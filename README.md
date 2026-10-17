@@ -26,6 +26,7 @@ only ever holds the matching public key.
 | Keyring unlock | A QR login unlocks the GNOME keyring (password sealed in the TPM) | `sudo ./install-keyring.sh`, then `sudo thessley-pam keyring-link` |
 | Thessley Login (admin window) | Switches, phones, keyring link in one window | `sudo ./install-admin.sh` |
 | ssh with a phone pass | ssh key + phone once, then the key alone for N hours | [docs/SSH.md](docs/SSH.md) |
+| Admin web page | sign in with a phone approval, manage your keys, settings and activity in a browser | [docs/WEB.md](docs/WEB.md) |
 
 Install order: `sudo apt install qrencode python3-cryptography`, then `sudo ./install.sh`, then whatever you want from
 the table. `install.sh` copies the code into root-owned places (`/usr/local/lib/thessley-pam`) and never edits
