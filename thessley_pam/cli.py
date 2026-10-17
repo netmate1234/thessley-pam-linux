@@ -17,8 +17,11 @@
 """
 
 import argparse
+import base64
+import hashlib
 import os
 import pwd
+import hmac
 import queue
 import re
 import secrets
@@ -26,9 +29,10 @@ import select
 import subprocess
 import sys
 import threading
+import time
 from urllib.parse import urlencode
 
-from . import grants, listener, machine, pam, protocol, store
+from . import grants, listener, machine, pam, protocol, store, tpmproof
 
 DEFAULT_PORT = 47810
 ENROLL_WAIT = 180   # seconds the QR code stays valid
@@ -103,6 +107,67 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
     decided = threading.Event()
     decision: dict = {}
     taken = threading.Lock()
+    tpm_state: dict = {}  # what the one TPM challenge of this enrolment issued (one challenge, one attempt)
+
+    def b64(raw: bytes) -> str:
+        return base64.b64encode(raw).decode()
+
+    def tpm_challenge(client_ip: str, body: dict) -> tuple[int, dict]:
+        """Step 1 of the TPM proof: the app sends its endorsement key certificates and a fresh attestation key; we check
+        the certificates against the manufacturer roots and answer with a secret only that chip can recover."""
+        def refused(reason: str):
+            return 400, {"result": "error", "message": f"The TPM could not be verified: {reason}."}
+        if tpm_state:
+            return 409, {"result": "error", "message": "A TPM challenge was already issued for this enrolment."}
+        try:
+            certs, ak = body["ek_certs"], body["ak_public"]
+            if not isinstance(certs, list) or not isinstance(ak, str) or len(ak) > 1024:
+                raise ValueError
+            ders = [base64.b64decode(c, validate=True) for c in certs]
+            ak_public = base64.b64decode(ak, validate=True)
+        except (KeyError, ValueError, TypeError):
+            return 400, {"result": "error", "message": "Missing TPM details."}
+        ek = tpmproof.verify_ek_chain(ders)
+        if ek is None:
+            return refused("the TPM certificate chain is not one we trust")
+        try:
+            attributes = tpmproof.parse_public(ak_public)["attributes"]
+            need = tpmproof.ATTR_FIXEDTPM | tpmproof.ATTR_FIXEDPARENT | tpmproof.ATTR_RESTRICTED | tpmproof.ATTR_SIGN
+            if attributes & need != need:
+                return refused("attestation key is not a restricted signing key")
+            secret = os.urandom(32)
+            cred = tpmproof.make_credential(ek["x"], ek["y"], tpmproof.name(ak_public), secret)
+        except tpmproof.TpmProofError:
+            return refused("could not build the challenge")
+        tpm_state.update(ak=hashlib.sha256(ak_public).digest(), secret=hashlib.sha256(secret).digest(),
+                         maker=ek["manufacturer"], model=ek["model"])
+        return 200, {"credential_blob": b64(cred["credential_blob"]), "secret": b64(cred["secret"])}
+
+    def check_tpm(public_key: str, tpm: dict | None) -> dict | None:
+        """Step 2: the app's proof that its signing key lives in the TPM we challenged. What this computer concluded."""
+        state = dict(tpm_state)
+        tpm_state.clear()  # one challenge, one attempt
+        if tpm is None:
+            return None
+        def no(reason: str) -> dict:
+            return {"level": "unverified", "reason": reason}
+        if not state:
+            return no("no challenge was issued")
+        try:
+            field = {k: base64.b64decode(str(tpm[k]), validate=True)
+                     for k in ("ak_public", "activated_secret", "certify_info", "certify_signature", "key_public")}
+            spki = base64.b64decode(public_key, validate=True)
+        except (KeyError, ValueError, TypeError):
+            return no("incomplete proof")
+        if not hmac.compare_digest(state["ak"], hashlib.sha256(field["ak_public"]).digest()):
+            return no("a different attestation key than the one challenged")
+        if not hmac.compare_digest(state["secret"], hashlib.sha256(field["activated_secret"]).digest()):
+            return no("the activation secret does not match (the key and the TPM certificate are not in the same chip)")
+        reason = tpmproof.verify_certification(field["ak_public"], field["certify_info"], field["certify_signature"],
+                                               field["key_public"], nonce.encode("ascii"), spki)
+        if reason:
+            return no(reason)
+        return {"level": "tpm", "maker": state["maker"], "model": state["model"], "checked_at": int(time.time())}
 
     def respond(client_ip: str, body: dict) -> tuple[int, dict]:
         try:
@@ -123,15 +188,19 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
         if not taken.acquire(blocking=False):
             return 409, {"result": "error", "message": "This code has already been used."}
 
-        pending.put({"client_ip": client_ip, "public_key": public_key, "label": label, "chain": chain})
+        tpm = body.get("tpm")
+        attestation = check_tpm(public_key, tpm if isinstance(tpm, dict) else None)
+        pending.put({"client_ip": client_ip, "public_key": public_key, "label": label, "chain": chain,
+                     "attestation": attestation})
         if not decided.wait(CONFIRM_WAIT + 10) or not decision.get("ok"):
             return 200, {"result": "denied", "message": "Not confirmed on the computer."}
         return 200, {"result": "ok", "credential_id": decision["credential_id"], "username": username,
-                     "hostname": host}
+                     "hostname": host, "attestation": "tpm" if (attestation or {}).get("level") == "tpm" else ""}
 
     path = f"/thessley-pam/v1/enroll/{request_id}/respond"
+    tpm_path = f"/thessley-pam/v1/enroll/{request_id}/tpm-challenge"
     device = None
-    with listener.listening(ip, {path: respond}, port) as lst:
+    with listener.listening(ip, {path: respond, tpm_path: tpm_challenge}, port) as lst:
         link = "thessleypam://enroll?" + urlencode({
             "h": ip, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
             "m": mid, "hn": host, "u": username,
@@ -157,9 +226,13 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
         code = protocol.pairing_code(item["public_key"])
         say(f"\nPhone '{item['label']}' ({item['client_ip']}) answered.")
         say(f"\n    Code:  {code}\n")
+        att = item.get("attestation")
+        if att:
+            say("    TPM:   " + (f"verified, a genuine TPM 2.0 chip ({(att['maker'] + ' ' + att['model']).strip() or 'maker not named'})"
+                                 if att["level"] == "tpm" else f"claimed but NOT verified ({att['reason']})") + "\n")
         ok = ask_yes("Does the phone show the same code? Type yes to add it: ", CONFIRM_WAIT)
         if ok:
-            device = store.add_device(username, item["public_key"], item["label"], item["chain"])
+            device = store.add_device(username, item["public_key"], item["label"], item["chain"], item.get("attestation"))
             decision.update(ok=True, credential_id=device["credential_id"])
         decided.set()
         # Let the phone's request receive its answer before the listener shuts down.
@@ -289,7 +362,10 @@ def cmd_list(args) -> int:
     import datetime
     for d in devs:
         when = datetime.datetime.fromtimestamp(d["enrolled_at"]).strftime("%Y-%m-%d %H:%M")
-        print(f"{d['credential_id']}  {d['label']:<24}  enrolled {when}" + ("  (disabled)" if d.get("disabled") else ""))
+        att = d.get("attestation") or {}
+        proof = (f"  TPM verified ({(att.get('maker', '') + ' ' + att.get('model', '')).strip() or 'maker not named'})" if att.get("level") == "tpm"
+                 else "  TPM claimed, not verified" if att.get("level") == "unverified" else "")
+        print(f"{d['credential_id']}  {d['label']:<24}  enrolled {when}" + proof + ("  (disabled)" if d.get("disabled") else ""))
     return 0
 
 
