@@ -31,6 +31,22 @@ everywhere, only for networks you trust), `port N` (47820), `session MINUTES` (1
   phone approves each change.
 - **Activity.** The recent approvals, refusals, passes and enrolments for your account (administrators can see everyone's).
 
+## TPM proof
+
+When the Thessley Passkey desktop app enrols a key that is held in a TPM chip (protection "TPM chip + PIN", and so on), it
+also sends a proof, and this computer checks it: the chip's own manufacturer certificate chain (against the roots in
+`thessley_pam/tpm_roots/`, Intel and AMD shipped), a challenge only that chip can answer (credential activation), and the
+chip's certification that the new key was created inside it and cannot leave it. A key that passes shows "TPM 2.0 proof:
+verified, a genuine chip from INTC ADL" under **Details** here, and in `thessley-pam list`; a key that fails shows why.
+
+- **The proof is made at enrolment.** A key enrolled before this was added has none; remove it and enrol the app again.
+- **It never blocks an enrolment:** without a proof the key is still added, and the page says so.
+- **What it does not cover:** revocation lists are not checked, nor the security of the chip's firmware. A maker whose root
+  is not in `tpm_roots/` (Infineon, STMicro, Nuvoton, Microsoft's virtual TPMs ...) is not trusted until you add its root
+  certificate there as a `.pem` file.
+- It needs the `asn1crypto` library (`sudo apt install python3-asn1crypto`): TPM certificates are not always strict DER.
+- Phones get no such line: an Android key's attestation chain is stored and shown, but not checked against Google's root.
+
 ## How it is kept safe
 
 - Sign-in needs a signature from a phone already enrolled for the account; an account with no key, or that does not exist,
