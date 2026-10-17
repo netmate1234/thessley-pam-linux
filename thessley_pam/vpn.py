@@ -108,7 +108,7 @@ class Approvals:
         env = {"PAM_TYPE": "auth", "PAM_USER": flow.user, "PAM_SERVICE": SERVICE, "PAM_RHOST": flow.rhost, "PAM_TTY": "vpn",
                "PAM_PUBLIC_HOST": st["public_host"], "PAM_ALWAYS_LINK": "1"}
         try:
-            rc = self.runner(env, say=flow.say, wait=st["wait"])
+            rc = self.runner(env, say=flow.say, wait=st["wait"], req_type="vpn")
         except Exception as exc:  # strict: any trouble is a refusal
             flow.say(f"error: {exc!r}")
             rc = pam.REFUSED

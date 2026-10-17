@@ -22,7 +22,7 @@ SIG_VERSION = "thessley_pam_v1"
 CLOCK_SKEW = 60  # seconds either way, same as the website protocol
 
 ACTIONS = {"register", "approve", "deny"}
-TYPES = {"enroll", "sudo", "login"}
+TYPES = {"enroll", "sudo", "login", "vpn"}
 
 _FIELD = re.compile(r"^[^|\s]+$")
 

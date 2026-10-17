@@ -67,10 +67,10 @@ class VpnBase(unittest.TestCase):
     def answer(self, link, action="approve"):
         q = {k: v[0] for k, v in parse_qs(urlparse(link).query).items()}
         ts = int(time.time())
-        msg = protocol.canonical("sudo", q["id"], q["m"], q["u"], q["n"], ts, action)
+        msg = protocol.canonical("vpn", q["id"], q["m"], q["u"], q["n"], ts, action)
         body = {"credential_id": self.device["credential_id"], "action": action, "timestamp": ts, "signature": self.phone.sign(msg)}
         # the link names the public host; this test machine reaches the listener on its own address
-        return q, _post(dict(q, h="127.0.0.1"), f"/thessley-pam/v1/sudo/{q['id']}/respond", body)
+        return q, _post(dict(q, h="127.0.0.1"), f"/thessley-pam/v1/vpn/{q['id']}/respond", body)
 
     def flow_link(self):
         for _ in range(50):
@@ -92,6 +92,7 @@ class DaemonTest(VpnBase):
         self.assertEqual(code, 200)
         self.assertEqual(q["h"], "vpn.example.org")      # the device is told the public name, not the LAN address
         self.assertEqual(q["s"], "openvpn")
+        self.assertTrue(self.flow_link().startswith("thessleypam://vpn?"))      # a type of its own, signed as such
         self.assertEqual(q["r"], "203.0.113.7")
         done = read()
         self.assertEqual((done["done"], done["ok"]), (True, True))
@@ -136,13 +137,46 @@ class DaemonTest(VpnBase):
 
     def test_a_pass_from_an_earlier_approval_needs_no_new_one(self):
         runner_calls = []
-        self.approvals.runner = lambda env, say, wait: (runner_calls.append(env), pam.OK)[1]
+        self.approvals.runner = lambda env, say, wait, **kw: (runner_calls.append((env, kw)), pam.OK)[1]
         conn, f, read = self.ask()
         self.addCleanup(conn.close)
         done = read()
         self.assertEqual((done["done"], done["ok"]), (True, True))      # no url step at all
-        self.assertEqual(runner_calls[0]["PAM_PUBLIC_HOST"], "vpn.example.org")
-        self.assertEqual(runner_calls[0]["PAM_SERVICE"], "openvpn")
+        self.assertEqual(runner_calls[0][0]["PAM_PUBLIC_HOST"], "vpn.example.org")
+        self.assertEqual(runner_calls[0][0]["PAM_SERVICE"], "openvpn")
+        self.assertEqual(runner_calls[0][1]["req_type"], "vpn")
+
+
+class EnrolTest(VpnBase):
+    def test_a_vpn_enrolment_link_carries_the_public_host(self):
+        from thessley_pam import cli
+        saw = []
+        cli.machine.lan_ip = lambda: "127.0.0.1"
+        t = threading.Thread(target=lambda: cli._enroll_flow(USER, 47690, say=saw.append, ask_yes=lambda p, t: False,
+                                                             enroll_wait=3, link_extra={"vh": "vpn.example.org"}), daemon=True)
+        t.start()
+        for _ in range(50):
+            if any("Link:" in s for s in saw):
+                break
+            time.sleep(0.1)
+        link = [s for s in saw if "Link:" in s][0].split("Link: ")[1].strip()
+        q = {k: v[0] for k, v in parse_qs(urlparse(link).query).items()}
+        self.assertEqual(q["vh"], "vpn.example.org")
+        self.assertEqual(q["h"], "127.0.0.1")          # the enrolment itself still happens on the local network
+        t.join(10)
+
+    def test_a_plain_enrolment_has_no_public_host(self):
+        from thessley_pam import cli
+        saw = []
+        cli.machine.lan_ip = lambda: "127.0.0.1"
+        t = threading.Thread(target=lambda: cli._enroll_flow(USER, 47691, say=saw.append, ask_yes=lambda p, t: False, enroll_wait=3), daemon=True)
+        t.start()
+        for _ in range(50):
+            if any("Link:" in s for s in saw):
+                break
+            time.sleep(0.1)
+        self.assertNotIn("vh=", [s for s in saw if "Link:" in s][0])
+        t.join(10)
 
 
 class PortsTest(unittest.TestCase):
@@ -230,7 +264,7 @@ class ScriptTest(VpnBase):
         self.assertEqual(box["rc"], 0)
 
     def test_end_to_end_with_a_pass_exits_0_straight_away(self):
-        self.approvals.runner = lambda env, say, wait: pam.OK
+        self.approvals.runner = lambda env, say, wait, **kw: pam.OK
         self.assertEqual(vpn.authenticate(self.env(), self.sock_path, log=lambda t: None), 0)
 
 

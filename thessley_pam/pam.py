@@ -60,7 +60,8 @@ WAIT_MARKER = "THESSLEY-WAIT"  # "the code is on screen; I am now waiting for th
 QR_MARKER = "THESSLEY-QR "  # the GNOME Shell extension draws the QR code from this line
 
 
-def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: float | None = None) -> int:
+def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: float | None = None,
+        req_type: str | None = None) -> int:
     """sudo mode (default): a second step after the password; users without a device pass through.
 
     login mode (--login, /etc/pam.d/gdm-thessley): the device *instead of* the password, on the GNOME login
@@ -87,7 +88,11 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
             _log(f"no device for {username} ({service}); refused because a device is required here", warn=True)
             return REFUSED
         return REFUSED if login else OK
-    req_type = "login" if login else "sudo"
+    # "vpn" is a type of its own, signed as such: the apps accept a public address only for it (and only for the host they
+    # recorded when they were enrolled for it), and an approval for a VPN login can never be replayed as a sudo approval.
+    req_type = req_type or ("login" if login else "sudo")
+    if req_type not in ("sudo", "login", "vpn"):
+        return REFUSED
 
     # A pass from an earlier approval (grace hours switched on for this service with `thessley-pam grace`): the
     # same user, service and client address need no new approval until it runs out. Never for the login screen.

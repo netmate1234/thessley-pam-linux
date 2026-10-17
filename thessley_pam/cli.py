@@ -9,7 +9,7 @@
     sudo thessley-pam enroll-me [--link]            a user adds a device for their own account (see install-selfenroll.sh)
     sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd device needs the 1st to approve
     sudo thessley-pam web [status|on|off|serve|listen ADDR|port N|session MIN|cert FILE KEY]   the admin web page (web.py)
-    sudo thessley-pam vpn [status|on|off|public-host NAME|page-port N|group G|wait SEC|approval-port N|approval-tries N]   the OpenVPN second step (vpn.py)
+    sudo thessley-pam vpn [status|on|off|enroll [USER]|public-host NAME|page-port N|group G|wait SEC|approval-port N|approval-tries N]   the OpenVPN second step (vpn.py)
     sudo thessley-pam passes                            who holds a device pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a device login unlock the GNOME keyring (see keyring.py)
@@ -89,13 +89,15 @@ def cmd_enroll(args) -> int:
         sys.exit("Run this in a terminal: you will be asked to type yes to confirm the device.")
     tty.close()
     # The helpers are looked up when called, so a test (or another front end) can replace them.
+    extra = {"vh": args.vpn_host} if getattr(args, "vpn_host", None) else None
     device = _enroll_flow(username, args.port, say=lambda text: print(text, flush=True),
-                          ask_yes=lambda prompt, timeout: _ask_yes(prompt, timeout), show_qr=lambda link: _show_qr(link))
+                          ask_yes=lambda prompt, timeout: _ask_yes(prompt, timeout), show_qr=lambda link: _show_qr(link),
+                          link_extra=extra)
     return 0 if device else 1
 
 
 def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: threading.Event | None = None,
-                 enroll_wait: float = ENROLL_WAIT, confirm_wait: float = CONFIRM_WAIT):
+                 enroll_wait: float = ENROLL_WAIT, confirm_wait: float = CONFIRM_WAIT, link_extra: dict | None = None):
     """Add one device for `username`: show the link (and QR), wait for the device, show the pairing code, ask whether the
     codes match. Returns the stored device, or None. Used by the command line (say = print, ask_yes = a prompt on the
     terminal) and by the admin web page (say collects lines for the page, ask_yes waits for a button, cancel is set
@@ -207,7 +209,7 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
     with listener.listening(ip, {path: respond, tpm_path: tpm_challenge}, port) as lst:
         link = "thessleypam://enroll?" + urlencode({
             "h": ip, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
-            "m": mid, "hn": host, "u": username,
+            "m": mid, "hn": host, "u": username, **(link_extra or {}),
         })
         say(f"\nAdd a device that may approve logins for '{username}' on {host}.\n")
         say(f"Link: {link}\n")  # always: for the desktop app, or a phone that cannot scan this screen
@@ -311,6 +313,14 @@ def cmd_vpn(args) -> int:
     if action == "auth":
         return vpn.authenticate(os.environ)
     _need_root()
+    if action == "enroll":
+        # Add a device the usual way (on this network, with the code check), and tell it which public host this computer's VPN
+        # approvals will come from. The app keeps that host with the computer and accepts a VPN request on a public address
+        # only from that host.
+        host = grants.vpn_settings()["public_host"]
+        if not host:
+            sys.exit("Set the public host first:  sudo thessley-pam vpn public-host NAME")
+        return cmd_enroll(argparse.Namespace(user=(values[0] if values else None), port=DEFAULT_PORT, link=False, vpn_host=host))
     if action in ("on", "off"):
         grants.set_vpn(enabled=(action == "on"))
         if os.path.exists("/etc/systemd/system/thessley-pam-vpn.service"):
@@ -334,7 +344,7 @@ def cmd_vpn(args) -> int:
             sys.exit("A host name or an address, nothing else.")
         grants.set_vpn(**{key: value})
     elif action != "status":
-        sys.exit("Say status, on, off, serve, auth, public-host, page-port, group, wait, approval-port or approval-tries.")
+        sys.exit("Say status, on, off, enroll, serve, auth, public-host, page-port, group, wait, approval-port or approval-tries.")
     st = grants.vpn_settings()
     host = st["public_host"] or machine.lan_ip()
     print(f"VPN approval: {'ON' if st['enabled'] else 'off'}   link host {host}   QR page port {st['page_port']}   "
@@ -586,7 +596,7 @@ def main(argv=None) -> int:
     wb.add_argument("values", nargs="*")
     wb.set_defaults(func=cmd_web)
     vp = sub.add_parser("vpn", help="the OpenVPN second step: a device must approve after the client certificate")
-    vp.add_argument("action", nargs="?", choices=("status", "on", "off", "serve", "auth", "public-host", "page-port", "group", "wait",
+    vp.add_argument("action", nargs="?", choices=("status", "on", "off", "enroll", "serve", "auth", "public-host", "page-port", "group", "wait",
                                               "approval-port", "approval-tries"))
     vp.add_argument("values", nargs="*")
     vp.set_defaults(func=cmd_vpn)
