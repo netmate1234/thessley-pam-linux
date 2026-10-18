@@ -322,14 +322,29 @@ def make_page_handler(approvals: Approvals, qr_svg):
     return Handler
 
 
+class _VPNPageServer(ThreadingHTTPServer):
+    """Keep slow TLS handshakes out of the accept loop so one stalled client cannot block the QR page."""
+
+    daemon_threads = True
+    request_queue_size = 32
+
+    def __init__(self, address, handler, context: ssl.SSLContext):
+        self.tls_context = context
+        super().__init__(address, handler)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(10)
+        request = self.tls_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+        request.settimeout(10)
+        return request, client_address
+
+
 def make_page_server(approvals: Approvals, ip: str, port: int, cert: str, key: str, qr_svg) -> ThreadingHTTPServer:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(cert, key)
-    httpd = ThreadingHTTPServer((ip, port), make_page_handler(approvals, qr_svg))
-    httpd.daemon_threads = True
-    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-    return httpd
+    return _VPNPageServer((ip, port), make_page_handler(approvals, qr_svg), ctx)
 
 
 def serve() -> int:
