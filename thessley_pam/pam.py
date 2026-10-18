@@ -166,7 +166,7 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
                 say(QR_MARKER + link)
             else:
                 qr = subprocess.run(["/usr/bin/qrencode", "-t", "UTF8", "-m", "2", link],
-                                    check=True, capture_output=True, text=True).stdout
+                                    check=True, capture_output=True, encoding="utf-8").stdout
                 say(f"Approve {service} for {username} on {host} with Thessley Passkey (scan within {wait:g} s):")
                 if store.show_link() or env.get("PAM_ALWAYS_LINK"):
                     say(f"Link: {link}")  # above the QR code: it stays in view when the code scrolls the screen

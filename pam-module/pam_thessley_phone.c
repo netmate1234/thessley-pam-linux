@@ -202,16 +202,13 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
     text[len] = '\0';
 
     if (marker_seen) {
-        /* PAM_TEXT_INFO is sent to SSH keyboard-interactive clients without asking for a reply. The phone's
-         * signed response is the only approval needed; waiting for a terminal Enter here added no security. */
-        if (pam_info(pamh, "%s", text) != PAM_SUCCESS) {
-            /* Keep a usable fallback for PAM conversations that cannot display informational messages. */
-            char prompt[MAX_TEXT + 128];
-            snprintf(prompt, sizeof prompt, "%s\nApprove on your phone, then press Enter: ", text);
-            char *reply = NULL;
-            pam_prompt(pamh, PAM_PROMPT_ECHO_ON, &reply, "%s", prompt);
-            free(reply);
-        }
+        /* Send the QR as a keyboard-interactive prompt. This is broadly displayed as terminal text by SSH clients;
+         * PAM_TEXT_INFO is automatically continued but some clients escape its UTF-8 QR blocks. */
+        char prompt[MAX_TEXT + 128];
+        snprintf(prompt, sizeof prompt, "%s\nApprove on your phone, then press Enter: ", text);
+        char *reply = NULL;
+        pam_prompt(pamh, PAM_PROMPT_ECHO_ON, &reply, "%s", prompt);
+        free(reply);
     }
 
     /* Phase 2: the helper's verdict. */
@@ -299,5 +296,5 @@ PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags, int argc, con
 PAM_EXTERN int pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
     (void)pamh; (void)flags; (void)argc; (void)argv;
-    return PAM_IGNORE;
+    return PAM_SUCCESS;
 }
