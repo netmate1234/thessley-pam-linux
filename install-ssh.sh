@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds and installs pam_thessley_phone.so, the phone step for ssh (sshd shows PAM text only together with a
-# question, so the module shows the QR code with "Approve on your phone, then press Enter"). Run after install.sh.
+# Builds and installs pam_thessley_phone.so, the phone step for ssh. The QR is sent as PAM informational text, so
+# keyboard-interactive SSH clients can display it without requiring an Enter response. Run after install.sh.
 #
 #   sudo ./install-ssh.sh
 #

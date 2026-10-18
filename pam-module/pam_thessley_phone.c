@@ -5,8 +5,9 @@
  *   auth  [success=done default=die]  pam_thessley_phone.so
  *
  * It runs /usr/local/lib/thessley-pam/pam-helper --marker, collects what the helper prints (the QR code) up to the
- * line THESSLEY-WAIT, shows it with the question "Approve on your phone, then press Enter", and then waits for the
- * helper to finish. Exit 0 from the helper means approved (or a still valid pass), anything else refuses.
+ * line THESSLEY-WAIT, sends it as PAM informational text, and then waits for the helper to finish. OpenSSH sends
+ * informational text to keyboard-interactive clients without a response prompt, so approval continues automatically.
+ * Exit 0 from the helper means approved (or a still valid pass), anything else refuses.
  * If the helper finishes before it printed the wait line (a valid pass, a refusal, no phone), its text is shown as
  * plain information and the exit code decides, with no question asked.
  *
@@ -201,11 +202,14 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
     text[len] = '\0';
 
     if (marker_seen) {
-        char prompt[MAX_TEXT + 128];
-        snprintf(prompt, sizeof prompt, "%s\nApprove on your phone, then press Enter: ", text);
-        char *reply = NULL;
-        pam_prompt(pamh, PAM_PROMPT_ECHO_ON, &reply, "%s", prompt);
-        if (reply) {
+        /* PAM_TEXT_INFO is sent to SSH keyboard-interactive clients without asking for a reply. The phone's
+         * signed response is the only approval needed; waiting for a terminal Enter here added no security. */
+        if (pam_info(pamh, "%s", text) != PAM_SUCCESS) {
+            /* Keep a usable fallback for PAM conversations that cannot display informational messages. */
+            char prompt[MAX_TEXT + 128];
+            snprintf(prompt, sizeof prompt, "%s\nApprove on your phone, then press Enter: ", text);
+            char *reply = NULL;
+            pam_prompt(pamh, PAM_PROMPT_ECHO_ON, &reply, "%s", prompt);
             free(reply);
         }
     }
