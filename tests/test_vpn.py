@@ -139,6 +139,21 @@ class DaemonTest(VpnBase):
             self.assertEqual(done["ok"], False, user)
             self.assertIn(why.lower(), done["reason"].lower(), user)
 
+    def test_a_taken_approval_port_is_said_so_not_called_a_denial(self):
+        import socket as _s
+        hog = _s.socket()
+        hog.bind(("127.0.0.1", pam.PORT))
+        hog.listen()
+        self.addCleanup(hog.close)
+        pam.PORT_TRIES = 1
+        self.addCleanup(setattr, pam, "PORT_TRIES", 10)
+        conn, f, read = self.ask()
+        self.addCleanup(conn.close)
+        done = read()
+        self.assertEqual(done["ok"], False)
+        self.assertIn("approval port", done["reason"])
+        self.assertNotIn("denied", done["reason"])
+
     def test_garbage_on_the_socket_is_refused(self):
         conn = socket.socket(socket.AF_UNIX)
         conn.settimeout(10)

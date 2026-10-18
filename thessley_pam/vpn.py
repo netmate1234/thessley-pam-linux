@@ -42,6 +42,7 @@ REASONS = {
     "refused": "The approval was denied on the device.",
     "timeout": "Nobody approved in time.",
     "starting": "The approval could not start.",
+    "busy": "Another approval is using the approval port. Try again in a minute.",
 }
 
 
@@ -120,7 +121,14 @@ class Approvals:
             flow.say(f"error: {exc!r}")
             rc = pam.REFUSED
         text = "\n".join(flow.lines)
-        flow.state = "approved" if rc == pam.OK else ("timeout" if "no answer" in text else "refused")
+        if rc == pam.OK:
+            flow.state = "approved"
+        elif "no answer" in text:
+            flow.state = "timeout"
+        elif "could not start" in text:   # the listener could not open: its port is taken by another approval
+            flow.state = "busy"
+        else:
+            flow.state = "refused"
         flow.finished.set()
         flow.ready.set()
 
