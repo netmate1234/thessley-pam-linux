@@ -12,6 +12,7 @@
 #    one, else into FORWARD.
 # The LAN interface is the one holding the default route. Undo: sudo ./uninstall-vpn-nat.sh
 set -eu
+PATH="$PATH:/usr/sbin:/sbin"   # iptables and ip live there; a normal user's path (--dry-run) lacks it
 
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
@@ -27,6 +28,7 @@ cat <<'HELPER'
 #!/bin/sh
 # thessley-pam-vpn-nat: start | stop | show      (installed by install-vpn-nat.sh)
 set -eu
+PATH="$PATH:/usr/sbin:/sbin"
 SUBNET="${VPN_SUBNET:-__SUBNET__}"
 LAN="$(ip -o route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')"
 [ -n "$LAN" ] || { echo "no default route: no LAN interface" >&2; exit 1; }
