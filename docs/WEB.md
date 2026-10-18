@@ -42,6 +42,9 @@ address: `sudo thessley-pam web listen auto`. Every page says which computer it 
 - **Administrators** (members of `sudo`, `admin` or `wheel`, and root) can pick any account and change the settings: how
   long one approval counts for ssh, phone required for ssh, users adding their own phone, text links in approvals. Their own
   phone approves each change.
+- **VPN devices.** A second table for the devices enrolled for the OpenVPN second step (`thessley-pam vpn enroll`, see VPN.md):
+  the same rename, switch off and remove, **Add a VPN device**, and a list of **VPN passes**. They are not mixed with the keys for
+  ssh, sudo and the screen.
 - **Passes.** Under your keys, the approvals that currently let your account in without asking your device again (the grace
   hours for ssh, sudo or the screen login), each with an **End this pass** button, and **End all passes**. The next login
   then asks your device again. Ending a pass only takes access away, so it needs no fresh approval.

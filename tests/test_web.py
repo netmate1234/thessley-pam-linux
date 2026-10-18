@@ -432,6 +432,81 @@ class WebTest(WebBase):
         self.assertEqual(len(grants.passes_of(USER)), 1)
         self.assertEqual(self.b.post("/passes/end", {"csrf": self.csrf(), "user": OTHER, "all": "1"})[0].status, 403)
 
+    # -- the VPN devices have a table of their own
+    def vpn_device(self, host="vpn.example.org"):
+        return store.add_device(USER, FakePhone().spki, "VPN phone", [], vpn_host=host)
+
+    def test_vpn_devices_are_listed_apart_from_the_ssh_devices(self):
+        vpn = self.vpn_device()
+        grants.set_vpn(public_host="vpn.example.org")
+        self.login()
+        _, body = self.b.get("/keys")
+        keys_part, vpn_part = body.split("<h2>VPN devices</h2>")
+        self.assertIn("My phone", keys_part)
+        self.assertNotIn("VPN phone", keys_part)
+        self.assertIn("VPN phone", vpn_part)
+        self.assertIn(vpn["credential_id"], vpn_part)
+        self.assertIn("VPN approvals from vpn.example.org", vpn_part)
+        self.assertIn("Add a VPN device", vpn_part)
+        self.assertNotIn("Add a VPN device", keys_part)
+
+    def test_without_a_public_host_a_vpn_device_cannot_be_added_here(self):
+        self.login()
+        _, body = self.b.get("/keys")
+        self.assertNotIn("Add a VPN device", body)
+        self.assertIn("vpn public-host", body)
+        resp, _ = self.b.post("/keys/addvpn", {"csrf": self.csrf(), "user": USER})
+        self.assertEqual(resp.status, 400)
+
+    def test_adding_a_vpn_device_from_the_page_records_the_host(self):
+        grants.set_vpn(public_host="vpn.example.org")
+        self.login()
+        self.step_up("/keys/addvpn", {"user": USER})
+        flow = [f for f in self.app.flows.values() if f.kind == "enroll"][0]
+        status = self.wait_for(self.b, flow.id, lambda s: s.get("link"))
+        q = {k: v[0] for k, v in parse_qs(urlparse(status["link"]).query).items()}
+        self.assertEqual(q["vh"], "vpn.example.org")            # the app is told where VPN approvals will come from
+        new = FakePhone()
+        threading.Thread(target=lambda: new.post(q, new.enroll_body(q)), daemon=True).start()
+        self.wait_for(self.b, flow.id, lambda s: s["state"] == "confirm")
+        self.b.post(f"/enroll/{flow.id}/confirm", {"csrf": self.csrf(), "answer": "yes"})
+        self.wait_for(self.b, flow.id, lambda s: s.get("next") or s["state"] == "failed")
+        added = [d for d in store.devices(USER) if d.get("vpn_host")]
+        self.assertEqual([d["vpn_host"] for d in added], ["vpn.example.org"])
+        self.assertEqual(len(store.devices(USER)), 2)
+
+    def test_an_ordinary_add_records_no_vpn_host(self):
+        self.login()
+        self.step_up("/keys/add", {"user": USER})
+        flow = [f for f in self.app.flows.values() if f.kind == "enroll"][0]
+        status = self.wait_for(self.b, flow.id, lambda s: s.get("link"))
+        self.assertNotIn("vh=", status["link"])
+
+    def test_vpn_passes_have_their_own_list_and_their_own_end_all(self):
+        self.vpn_device()
+        self.pass_for(USER)                                   # an ssh pass
+        self.pass_for(USER, "openvpn", "203.0.113.7")         # a VPN pass
+        self.login()
+        _, body = self.b.get("/keys")
+        before, vpn_part = body.split("<h3>VPN passes</h3>")
+        self.assertIn("ssh login", before)
+        self.assertNotIn("VPN login", before)
+        self.assertIn("VPN login", vpn_part)
+        self.assertIn("203.0.113.7", vpn_part)
+        self.b.post("/passes/end", {"csrf": self.csrf(), "user": USER, "all": "1", "scope": "vpn"})
+        self.assertEqual([p["service"] for p in grants.passes_of(USER)], ["sshd"])      # the ssh pass stays
+        self.pass_for(USER, "openvpn", "203.0.113.7")
+        self.b.post("/passes/end", {"csrf": self.csrf(), "user": USER, "all": "1", "scope": "other"})
+        self.assertEqual([p["service"] for p in grants.passes_of(USER)], ["openvpn"])   # the VPN pass stays
+
+    def test_set_vpn_host_marks_and_unmarks_a_device(self):
+        d = store.devices(USER)[0]
+        self.assertTrue(store.set_vpn_host(USER, d["credential_id"], "vpn.example.org"))
+        self.assertEqual(store.devices(USER)[0]["vpn_host"], "vpn.example.org")
+        self.assertTrue(store.set_vpn_host(USER, d["credential_id"], ""))
+        self.assertNotIn("vpn_host", store.devices(USER)[0])
+        self.assertFalse(store.set_vpn_host(USER, "c_nope", "x"))
+
     # -- who may do what
     def test_a_normal_user_sees_only_their_own_keys_and_no_admin_page(self):
         self.login()

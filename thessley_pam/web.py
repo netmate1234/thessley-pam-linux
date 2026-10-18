@@ -241,8 +241,8 @@ class WebApp:
             threading.Thread(target=self._approval_thread, args=(flow, service, ip), daemon=True).start()
         return flow
 
-    def start_enroll(self, user: str, owner: str | None = None) -> Flow | None:
-        flow = self._new_flow(Flow("enroll", user, "Add a device", owner=owner))
+    def start_enroll(self, user: str, owner: str | None = None, vpn_host: str = "") -> Flow | None:
+        flow = self._new_flow(Flow("enroll", user, "Add a VPN device" if vpn_host else "Add a device", owner=owner))
         if flow is None:
             return None
 
@@ -256,7 +256,8 @@ class WebApp:
             device = None
             try:
                 device = cli._enroll_flow(user, cli.DEFAULT_PORT, say=flow.say, ask_yes=ask_yes, show_qr=None, cancel=flow.cancel,
-                                         enroll_wait=WEB_ENROLL_WAIT, confirm_wait=WEB_CONFIRM_WAIT)
+                                         enroll_wait=WEB_ENROLL_WAIT, confirm_wait=WEB_CONFIRM_WAIT,
+                                         link_extra={"vh": vpn_host} if vpn_host else None)
             except Exception as exc:
                 flow.say(f"error: {exc!r}")
             if not device:  # whatever went wrong, a device that was stored during this flow counts as added
@@ -331,9 +332,9 @@ class WebApp:
             return f"/keys?user={user}", "Removed. Its passes ended with it."
         return run
 
-    def change_begin_enroll(self, user: str, owner: str):
+    def change_begin_enroll(self, user: str, owner: str, vpn_host: str = ""):
         def run():
-            flow = self.start_enroll(user, owner)
+            flow = self.start_enroll(user, owner, vpn_host)
             if flow is None:
                 raise ValueError("too many requests at once, try again in a minute")
             return f"/enroll/{flow.id}", ""
@@ -698,19 +699,19 @@ tick();
             f'<script nonce="{esc(nonce)}">{script}</script>')
 
 
-def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[str], details=None) -> str:
+def key_cards(user: str, viewer: Session, devices: list[dict], details, empty: str) -> str:
     rows = []
-    devices = store.devices(user)
     for d in devices:
         cred = d["credential_id"]
         when = datetime.datetime.fromtimestamp(d.get("enrolled_at") or 0).strftime("%Y-%m-%d %H:%M") if d.get("enrolled_at") else "?"
         used = datetime.datetime.fromtimestamp(d["last_used"]).strftime("%Y-%m-%d %H:%M") if d.get("last_used") else "never"
         off = bool(d.get("disabled"))
         hidden = f'<input type="hidden" name="csrf" value="{esc(viewer.csrf)}"><input type="hidden" name="user" value="{esc(user)}"><input type="hidden" name="cred" value="{esc(cred)}">'
+        vpn = f'<div class="dim">VPN approvals from {esc(d["vpn_host"])}</div>' if d.get("vpn_host") else ""
         rows.append(
             f'<div class="card"><strong>{esc(d.get("label", ""))}</strong> '
             f'{"<span class=bad>(switched off)</span>" if off else "<span class=ok>(active)</span>"}'
-            f'<div class="dim">Added {esc(when)} · last used {esc(used)}</div><div class="mono dim">{esc(cred)}</div>'
+            f'<div class="dim">Added {esc(when)} · last used {esc(used)}</div>{vpn}<div class="mono dim">{esc(cred)}</div>'
             + key_details_html(details(d) if details else []) +
             f'<div class="row">'
             f'<form method="post" action="/keys/rename">{hidden}<input type="text" name="label" value="{esc(d.get("label", ""))}" maxlength="64" style="width:12rem"><button>Rename</button></form>'
@@ -718,26 +719,48 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
             f'<form method="post" action="/keys/remove">{hidden}<button class="danger">Remove</button></form>'
             f'</div></div>')
     if not devices:
-        rows.append('<div class="card dim">No keys are enrolled for this account.</div>')
+        rows.append(f'<div class="card dim">{esc(empty)}</div>')
+    return "".join(rows)
+
+
+def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[str], details=None) -> str:
+    """Two tables: the devices for ssh, sudo and the screen, and the devices enrolled for the VPN (`vpn enroll`), each with its own
+    passes and its own way to add one."""
+    devices = store.devices(user)
+    plain = [d for d in devices if not d.get("vpn_host")]
+    vpn_devices = [d for d in devices if d.get("vpn_host")]
     who = ""
     if admin:
         opts = "".join(f'<option value="{esc(u)}"{" selected" if u == user else ""}>{esc(u)}</option>' for u in users)
         who = (f'<form method="get" action="/keys" class="row"><label class="dim">Account</label>'
                f'<select name="user" style="padding:8px">{opts}</select><button>Show</button></form>')
-    add = (f'<form method="post" action="/keys/add"><input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
-           f'<input type="hidden" name="user" value="{esc(user)}"><div class="row"><button class="primary">Add a device</button></div></form>')
+    def add_form(action: str, text: str) -> str:
+        return (f'<form method="post" action="/keys/{action}"><input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
+                f'<input type="hidden" name="user" value="{esc(user)}"><div class="row"><button class="primary">{esc(text)}</button></div></form>')
     note = ('<p class="dim">Changes ask your device for a fresh approval first, so nobody who only has this browser can change them.</p>')
-    return flash_html(flash) + f"<h2>Keys for {esc(user)}</h2>{who}{note}{''.join(rows)}{add}{passes_html(user, viewer, devices)}"
+    vpn_host = grants.vpn_settings()["public_host"]
+    vpn_note = ("<p class='dim'>Devices enrolled for the VPN: they approve a VPN login (after the client certificate) from the host "
+                "named on the card. Add one here, or on the computer with <span class='mono'>sudo thessley-pam vpn enroll</span>.</p>"
+                if vpn_host else
+                "<p class='dim'>No VPN public host is set, so a VPN device cannot be added here: "
+                "<span class='mono'>sudo thessley-pam vpn public-host NAME</span>.</p>")
+    return (flash_html(flash) + f"<h2>Keys for {esc(user)}</h2>{who}{note}"
+            + key_cards(user, viewer, plain, details, "No keys are enrolled for this account.")
+            + add_form("add", "Add a device") + passes_html(user, viewer, devices)
+            + "<h2>VPN devices</h2>" + vpn_note
+            + key_cards(user, viewer, vpn_devices, details, "No device is enrolled for the VPN.")
+            + (add_form("addvpn", "Add a VPN device") if vpn_host else "")
+            + passes_html(user, viewer, devices, vpn=True))
 
 
-PASS_NAMES = {"sshd": "ssh login", "sudo": "sudo", "gdm-thessley": "screen login", "gdm-password": "screen login"}
+PASS_NAMES = {"sshd": "ssh login", "sudo": "sudo", "gdm-thessley": "screen login", "gdm-password": "screen login", "openvpn": "VPN login"}
 
 
-def passes_html(user: str, viewer: Session, devices: list[dict]) -> str:
+def passes_html(user: str, viewer: Session, devices: list[dict], vpn: bool = False) -> str:
     """The approvals that let this account in without asking its device again (the 4 h passes), each with a button that ends it.
     Ending a pass only takes access away, so it needs no fresh approval; the next login asks the device again."""
     labels = {d["credential_id"]: d.get("label", "") for d in devices}
-    items = grants.passes_of(user)
+    items = [p for p in grants.passes_of(user) if (p.get("service") == "openvpn") == vpn]
     hidden = f'<input type="hidden" name="csrf" value="{esc(viewer.csrf)}"><input type="hidden" name="user" value="{esc(user)}">'
     rows = []
     for p in items:
@@ -753,7 +776,11 @@ def passes_html(user: str, viewer: Session, devices: list[dict]) -> str:
         body = '<div class="card dim">No pass is active: every login asks your device.</div>'
     else:
         body = "".join(rows) + (f'<form method="post" action="/passes/end" class="row">{hidden}'
-                                '<input type="hidden" name="all" value="1"><button class="danger">End all passes</button></form>')
+                                f'<input type="hidden" name="all" value="1"><input type="hidden" name="scope" value="{"vpn" if vpn else "other"}">'
+                                f'<button class="danger">End all {"VPN " if vpn else ""}passes</button></form>')
+    if vpn:
+        return ("<h3>VPN passes</h3><p class='dim'>After one approval, the same account from the same address can connect to the VPN "
+                "again without asking your device, if you set a grace time for it. End a pass to make the next connection ask again.</p>" + body)
     return ("<h2>Passes</h2><p class='dim'>After one approval, the same account from the same address is let in without asking "
             "your device again, for a few hours. End a pass to make the next login ask again.</p>" + body)
 
@@ -1013,6 +1040,11 @@ def make_handler(app: WebApp):
                 return self.html(403, "Not allowed", flash_html("You can only change your own keys."), s)
             if action == "add":
                 return self.start_change(s, f"adding a device for {target}", app.change_begin_enroll(target, s.user), SERVICE_DEVICE)
+            if action == "addvpn":
+                host = grants.vpn_settings()["public_host"]
+                if not host:
+                    return self.html(400, "Not possible", flash_html("Set the VPN's public host first: sudo thessley-pam vpn public-host NAME"), s)
+                return self.start_change(s, f"adding a VPN device for {target}", app.change_begin_enroll(target, s.user, host), SERVICE_DEVICE)
             known = {d["credential_id"]: d for d in store.devices(target)}
             if not CRED_RE.match(cred) or cred not in known:
                 return self.html(404, "Not found", flash_html("No such key."), s)
@@ -1035,7 +1067,11 @@ def make_handler(app: WebApp):
             if target is None:
                 return self.html(403, "Not allowed", flash_html("You can only end your own passes."), s)
             if data.get("all"):
-                ended = grants.revoke(username=target)
+                # the "all" button of one table ends that table's passes only: VPN passes apart from ssh, sudo and screen ones
+                vpn_scope = data.get("scope") == "vpn"
+                ended = sum(grants.revoke_one(target, p["service"], p["rhost"]) for p in grants.passes_of(target)
+                            if (p.get("service") == "openvpn") == vpn_scope) if data.get("scope") in ("vpn", "other") \
+                    else grants.revoke(username=target)
             else:
                 service, rhost = str(data.get("service", "")), str(data.get("rhost", ""))
                 if not service or not rhost or len(service) > 64 or len(rhost) > 64:

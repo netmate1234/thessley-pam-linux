@@ -9,7 +9,7 @@
     sudo thessley-pam enroll-me [--link]            a user adds a device for their own account (see install-selfenroll.sh)
     sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd device needs the 1st to approve
     sudo thessley-pam web [status|on|off|serve|listen ADDR|port N|session MIN|cert FILE KEY]   the admin web page (web.py)
-    sudo thessley-pam vpn [status|on|off|enroll [USER]|public-host NAME|page-port N|group G|wait SEC|approval-port N|approval-tries N]   the OpenVPN second step (vpn.py)
+    sudo thessley-pam vpn [status|on|off|enroll [USER]|mark CRED [USER]|unmark CRED [USER]|public-host NAME|page-port N|group G|wait SEC|approval-port N|approval-tries N]   the OpenVPN second step (vpn.py)
     sudo thessley-pam passes                            who holds a device pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a device login unlock the GNOME keyring (see keyring.py)
@@ -239,7 +239,8 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
         ok = ask_yes("Does the device show the same code? Type yes to add it: ", confirm_wait)
         try:
             if ok:
-                device = store.add_device(username, item["public_key"], item["label"], item["chain"], item.get("attestation"))
+                device = store.add_device(username, item["public_key"], item["label"], item["chain"], item.get("attestation"),
+                                      vpn_host=(link_extra or {}).get("vh", ""))
                 decision.update(ok=True, credential_id=device["credential_id"])
         except OSError as e:
             decision["error"] = str(e)
@@ -313,6 +314,18 @@ def cmd_vpn(args) -> int:
     if action == "auth":
         return vpn.authenticate(os.environ)
     _need_root()
+    if action in ("mark", "unmark"):
+        # For a device enrolled for the VPN before devices carried the mark: list it with the VPN devices (or take it out again).
+        if not values:
+            sys.exit(f"Usage: thessley-pam vpn {action} CREDENTIAL_ID [USER]")
+        host = grants.vpn_settings()["public_host"] if action == "mark" else ""
+        if action == "mark" and not host:
+            sys.exit("Set the public host first:  sudo thessley-pam vpn public-host NAME")
+        user = _target_user(values[1] if len(values) > 1 else None)
+        if not store.set_vpn_host(user, values[0], host):
+            sys.exit(f"No such device for {user}: {values[0]}")
+        print(("Marked" if host else "Unmarked") + f" {values[0]} as a VPN device." if host else f"Unmarked {values[0]}.")
+        return 0
     if action == "enroll":
         # Add a device the usual way (on this network, with the code check), and tell it which public host this computer's VPN
         # approvals will come from. The app keeps that host with the computer and accepts a VPN request on a public address
@@ -344,7 +357,7 @@ def cmd_vpn(args) -> int:
             sys.exit("A host name or an address, nothing else.")
         grants.set_vpn(**{key: value})
     elif action != "status":
-        sys.exit("Say status, on, off, enroll, serve, auth, public-host, page-port, group, wait, approval-port or approval-tries.")
+        sys.exit("Say status, on, off, enroll, mark, unmark, serve, auth, public-host, page-port, group, wait, approval-port or approval-tries.")
     st = grants.vpn_settings()
     host = st["public_host"] or machine.lan_ip()
     print(f"VPN approval: {'ON' if st['enabled'] else 'off'}   link host {host}   QR page port {st['page_port']}   "
@@ -428,7 +441,8 @@ def cmd_list(args) -> int:
         att = d.get("attestation") or {}
         proof = (f"  TPM verified ({(att.get('maker', '') + ' ' + att.get('model', '')).strip() or 'maker not named'})" if att.get("level") == "tpm"
                  else "  TPM claimed, not verified" if att.get("level") == "unverified" else "")
-        print(f"{d['credential_id']}  {d['label']:<24}  enrolled {when}" + proof + ("  (disabled)" if d.get("disabled") else ""))
+        print(f"{d['credential_id']}  {d['label']:<24}  enrolled {when}" + proof + ("  (disabled)" if d.get("disabled") else "")
+              + (f"  [VPN {d['vpn_host']}]" if d.get("vpn_host") else ""))
     return 0
 
 
@@ -596,7 +610,7 @@ def main(argv=None) -> int:
     wb.add_argument("values", nargs="*")
     wb.set_defaults(func=cmd_web)
     vp = sub.add_parser("vpn", help="the OpenVPN second step: a device must approve after the client certificate")
-    vp.add_argument("action", nargs="?", choices=("status", "on", "off", "enroll", "serve", "auth", "public-host", "page-port", "group", "wait",
+    vp.add_argument("action", nargs="?", choices=("status", "on", "off", "enroll", "mark", "unmark", "serve", "auth", "public-host", "page-port", "group", "wait",
                                               "approval-port", "approval-tries"))
     vp.add_argument("values", nargs="*")
     vp.set_defaults(func=cmd_vpn)

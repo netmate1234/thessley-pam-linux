@@ -61,6 +61,11 @@ as a sudo or ssh approval.
 
 If you change `public-host`, enrol again.
 
+On the admin page (`/keys`) the devices enrolled this way have a table of their own, **VPN devices**, apart from the keys for ssh,
+sudo and the screen, with **Add a VPN device** (it needs the public host above) and their own **VPN passes**. A device enrolled
+for the VPN before the server remembered it can be moved there with `sudo thessley-pam vpn mark CREDENTIAL_ID [USER]`
+(`vpn unmark` puts it back); `thessley-pam list` shows `[VPN host]` on them.
+
 ## OpenVPN server (`/etc/openvpn/server/thessley.conf`)
 
     port 1194

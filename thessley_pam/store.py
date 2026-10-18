@@ -146,7 +146,7 @@ def all_users() -> list[str]:
 
 
 def add_device(username: str, public_key: str, label: str, attestation_chain: list[str],
-               attestation: dict | None = None) -> dict:
+               attestation: dict | None = None, vpn_host: str = "") -> dict:
     """Store one phone or app. `attestation` is what this computer itself checked at enrolment (TPM proof), if anything:
     {"level": "tpm", "maker": ..., "model": ..., "checked_at": ...} or {"level": "unverified", "reason": ...}."""
     data = load(username)
@@ -160,9 +160,25 @@ def add_device(username: str, public_key: str, label: str, attestation_chain: li
     }
     if attestation:
         device["attestation"] = attestation
+    if vpn_host:  # enrolled for the VPN (thessley-pam vpn enroll): listed apart from the ssh and sudo devices
+        device["vpn_host"] = vpn_host
     data["devices"].append(device)
     save(username, data)
     return device
+
+
+def set_vpn_host(username: str, credential_id: str, host: str) -> bool:
+    """Mark a device as one enrolled for the VPN ("" removes the mark). For devices enrolled before the mark existed."""
+    data = load(username)
+    for d in data["devices"]:
+        if d["credential_id"] == credential_id:
+            if host:
+                d["vpn_host"] = host
+            else:
+                d.pop("vpn_host", None)
+            save(username, data)
+            return True
+    return False
 
 
 def touch(username: str, credential_id: str) -> None:
