@@ -48,7 +48,7 @@ address: `sudo thessley-pam web listen auto`. Every page says which computer it 
 - **Passes.** Under your keys, the approvals that currently let your account in without asking your device again (the grace
   hours for ssh, sudo or the screen login), each with an **End this pass** button, and **End all passes**. The next login
   then asks your device again. Ending a pass only takes access away, so it needs no fresh approval.
-- **Activity.** The recent approvals, refusals, passes and enrolments for your account (administrators can see everyone's).
+- **Activity.** The newest 3,000 approvals, refusals, passes and enrolments, shown 20 per page (administrators can see everyone's).
 
 ## TPM proof
 

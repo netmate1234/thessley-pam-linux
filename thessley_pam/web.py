@@ -400,7 +400,7 @@ class WebApp:
             parsed = parse_activity(line, user)
             if parsed:
                 out.append(parsed)
-        return out[-80:][::-1]
+        return out[-3000:][::-1]
 
 
 # ---- what is known about a key -----------------------------------------------------------------------------------
@@ -597,8 +597,8 @@ def parse_activity(line: str, only_user: str | None) -> tuple[str, str] | None:
 # ---- HTML ------------------------------------------------------------------------------------------------------
 
 CSS = """
-:root{--bg:#fff;--fg:#1c1c1e;--dim:#6b6b70;--card:#f2f2f5;--line:#d8d8de;--accent:#2563eb;--danger:#c0262d;--ok:#1a7f37}
-@media (prefers-color-scheme:dark){:root{--bg:#1a1b1e;--fg:#ececf0;--dim:#9a9aa3;--card:#25272c;--line:#3a3d44;--accent:#6ea1ff;--danger:#ff7b7f;--ok:#4ac26b}}
+:root{--bg:#1a1b1e;--fg:#ececf0;--dim:#9a9aa3;--card:#25272c;--line:#3a3d44;--accent:#6ea1ff;--danger:#ff7b7f;--ok:#4ac26b;color-scheme:dark}
+:root[data-theme="light"]{--bg:#fff;--fg:#1c1c1e;--dim:#6b6b70;--card:#f2f2f5;--line:#d8d8de;--accent:#2563eb;--danger:#c0262d;--ok:#1a7f37;color-scheme:light}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,sans-serif}
 main{max-width:760px;margin:0 auto;padding:20px 16px 48px}
 header{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px}
@@ -616,7 +616,22 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}bu
 code,.mono{font-family:ui-monospace,monospace;word-break:break-all;font-size:.85rem}
 .qr{display:block;margin:12px auto;background:#fff;padding:6px;border-radius:8px;width:min(92vw,520px);height:auto}
 table{width:100%;border-collapse:collapse}td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top;font-size:.92rem}
+.table-wrap{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+.pagination{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:12px 0}
+.pagination .page-status{color:var(--dim);font-size:.9rem;text-align:center;flex:1 1 auto}
+.pagination>a{margin-right:0}
+.pagination a[aria-disabled='true']{opacity:.45;pointer-events:none}
+.activity-time-cell{white-space:nowrap;padding-right:10px}
+.activity-time{display:flex;gap:8px;align-items:baseline;white-space:nowrap;font-variant-numeric:tabular-nums}
 .big{font-size:2rem;letter-spacing:.2rem;text-align:center;margin:10px 0}
+@media(max-width:600px){
+ .pagination{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin:10px 0}
+ .pagination .page-status{grid-column:1 / -1;grid-row:1;white-space:normal}
+ .pagination>a{min-height:44px;justify-content:center;padding:8px 10px}
+ .activity-time-cell{width:5rem;min-width:5rem;white-space:normal;padding-right:6px}
+ .activity-time{display:block;white-space:normal;line-height:1.3}
+ .activity-time-date,.activity-time-clock{display:block;font-size:.72rem;white-space:nowrap}
+}
 """
 
 
@@ -635,9 +650,13 @@ def page(title: str, body: str, nonce: str, session: Session | None = None, admi
     # On every page: opens the Thessley Passkey app on the computer or phone this browser runs on (no request needed).
     opener = '<a class="btn small" href="thessleypam://open">Open the Thessley app</a>'
     host = machine.hostname()  # which computer these keys are for (the address in the browser may be a tunnel's)
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{esc(title)} · Thessley Passkeys for {esc(host)}</title><style>{CSS}</style></head><body><main>'
-            f'<header><h1>Thessley Passkeys for {esc(host)}</h1><span style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">{who}{opener}</span></header>{nav}{body}</main></body></html>')
+    return (f'<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{esc(title)} · Thessley Passkeys for {esc(host)}</title><style>{CSS}</style>'
+            f'<script nonce="{esc(nonce)}">try{{if(localStorage.getItem("thessley-theme")==="light")document.documentElement.dataset.theme="light"}}catch(e){{}}</script>'
+            f'</head><body><main>'
+            f'<header><h1>Thessley Passkeys for {esc(host)}</h1><span style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">{who}{opener}'
+            '<button id="theme-toggle" type="button" aria-pressed="true">Light mode</button></span></header>'
+            f'{nav}{body}</main><script nonce="{esc(nonce)}">(()=>{{const b=document.getElementById("theme-toggle");const apply=theme=>{{document.documentElement.dataset.theme=theme;const dark=theme==="dark";b.textContent=dark?"Light mode":"Dark mode";b.setAttribute("aria-pressed",String(dark));try{{localStorage.setItem("thessley-theme",theme)}}catch(e){{}}}};apply(document.documentElement.dataset.theme||"dark");b.addEventListener("click",()=>apply(document.documentElement.dataset.theme==="dark"?"light":"dark"))}})()</script></body></html>')
 
 
 def flash_html(text: str) -> str:
@@ -791,10 +810,35 @@ def key_details_html(rows: list[tuple[str, str]]) -> str:
     return f"<details style='margin-top:8px'><summary class='link' style='cursor:pointer'>Details</summary><table>{body}</table></details>"
 
 
-def log_page(rows: list[tuple[str, str]], who: str) -> str:
-    body = "".join(f"<tr><td class='mono' style='white-space:nowrap'>{esc(t)}</td><td>{esc(s)}</td></tr>" for t, s in rows)
+def log_page(rows: list[tuple[str, str]], who: str, page_number: int = 1, everyone: bool = False) -> str:
+    page_size = 20
+    total = len(rows)
+    page_count = max(1, (total + page_size - 1) // page_size)
+    page_number = max(1, min(page_number, page_count))
+    start = (page_number - 1) * page_size
+    visible = rows[start:start + page_size]
+
+    def pager() -> str:
+        query = "?all=1" if everyone else ""
+        separator = "&" if query else "?"
+        previous = (f'<a class="btn small" href="/log{query}{separator}page={page_number - 1}" aria-label="Previous page">Previous</a>'
+                    if page_number > 1 else '<a class="btn small" aria-disabled="true" tabindex="-1">Previous</a>')
+        following = (f'<a class="btn small" href="/log{query}{separator}page={page_number + 1}" aria-label="Next page">Next</a>'
+                     if page_number < page_count else '<a class="btn small" aria-disabled="true" tabindex="-1">Next</a>')
+        status = (f"{start + 1}–{min(start + page_size, total)} of {total} · Page {page_number} of {page_count}"
+                  if total else "Page 1 of 1")
+        return f'<nav class="pagination" aria-label="Activity pages">{previous}<span class="page-status">{status}</span>{following}</nav>'
+
+    def timestamp(value: str) -> str:
+        date, separator, clock = value.partition(" ")
+        if not separator:
+            return esc(value)
+        return (f"<time class='activity-time' datetime='{esc(date)}T{esc(clock)}'>"
+                f"<span class='activity-time-date'>{esc(date)}</span><span class='activity-time-clock'>{esc(clock)}</span></time>")
+
+    body = "".join(f"<tr><td class='mono activity-time-cell'>{timestamp(t)}</td><td>{esc(s)}</td></tr>" for t, s in visible)
     return (f"<h2>Activity for {esc(who)}</h2><p class='dim'>The newest first. Approvals, refusals, passes and enrolments "
-            f"recorded on this computer.</p><div class='card'><table>{body or '<tr><td class=dim>Nothing recorded yet.</td></tr>'}</table></div>")
+            f"recorded on this computer.</p>{pager()}<div class='card'><div class='table-wrap'><table>{body or '<tr><td class=dim>Nothing recorded yet.</td></tr>'}</table></div></div>{pager()}")
 
 
 def admin_page(viewer: Session, flash: str) -> str:
@@ -983,7 +1027,10 @@ def make_handler(app: WebApp):
                     return
                 everyone = is_admin(s.user) and query.get("all") == "1"
                 rows = app.activity(None if everyone else s.user)
-                return self.html(200, "Activity", log_page(rows, "everyone" if everyone else s.user), s)
+                page_text = query.get("page", "1")
+                page_number = int(page_text) if page_text.isdigit() else 1
+                return self.html(200, "Activity", log_page(rows, "everyone" if everyone else s.user,
+                                                              page_number, everyone), s)
             if route == "/admin":
                 s = self.need_session()
                 if s is None:
