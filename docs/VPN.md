@@ -20,8 +20,8 @@ the client shows nothing while it waits, so the link has to be taken from elsewh
 
 ## What the script insists on
 
-- The certificate's **common name must equal the account name** typed as the VPN user name. A certificate for `alice` cannot
-  start an approval for `bob`, and a stranger without a valid certificate is stopped by OpenVPN before the script runs, so
+- The certificate's **common name must be the account name** typed as the VPN user name, or `account@device`. A certificate for
+  `alice` cannot start an approval for `bob`, and a stranger without a valid certificate is stopped by OpenVPN before the script runs, so
   nobody can make your phone ask.
 - The account needs at least one enrolled device (`sudo thessley-pam list --user NAME`).
 - Any trouble (daemon not running, no answer, a denial) is a refusal.
@@ -99,9 +99,13 @@ for the VPN before the server remembered it can be moved there with `sudo thessl
     persist-tun
     push "route 192.168.1.0 255.255.255.0"  # the networks the VPN reaches
 
-Make the certificates with easy-rsa (or any CA). One client certificate per device, **named after the account**:
+Make the certificates with easy-rsa (or any CA). **One client certificate per device**, named after the account: `ACCOUNT`, or
+`ACCOUNT@DEVICE` for each device (`alice@phone`, `alice@laptop`). Two devices must not share a certificate: OpenVPN lets a certificate
+name hold one connection, so the second device to connect drops the first ("connection failure" on it, then it reconnects and drops
+the other). The helper makes the certificate and a ready profile:
 
-    ./easyrsa gen-req alice nopass && ./easyrsa sign-req client alice
+    sudo ./vpn-new-client.sh alice laptop            # writes alice-laptop.ovpn; log in with the user name alice
+
 
 ## Client profile (`alice.ovpn`)
 

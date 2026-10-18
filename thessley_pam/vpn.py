@@ -36,6 +36,7 @@ SERVICE = "openvpn"
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 RHOST_RE = re.compile(r"^[0-9A-Fa-f:.]{1,45}$")
 FLOW_ID = re.compile(r"^[0-9a-f]{32}$")
+DEVICE_PART = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 MAX_FLOWS = 20
 KEEP_SECONDS = 15 * 60
 READY_WAIT = 15  # seconds for the approval to produce its link
@@ -386,6 +387,16 @@ def pending_method(env, url: str) -> tuple[str, str] | None:
     return None
 
 
+def certificate_belongs_to(cn: str, user: str) -> bool:
+    """The certificate's name is the account, or `account@device`: one certificate per device, so that two devices of one account do
+    not drop each other's connection (OpenVPN allows one connection per certificate name). An account cannot contain '@', so the
+    account part is unambiguous."""
+    if cn == user:
+        return True
+    account, at, device = cn.partition("@")
+    return bool(at) and account == user and bool(DEVICE_PART.match(device))
+
+
 def authenticate(env, sock_path: str = SOCKET, fork=os.fork, log=_log_default) -> int:
     """auth-user-pass-verify (via-env). 0 = accept, 1 = reject, 2 = deferred (a child finishes it)."""
     user, cn, rhost = env.get("username", ""), env.get("common_name", ""), env.get("untrusted_ip", "") or env.get("untrusted_ip6", "")
@@ -402,7 +413,7 @@ def authenticate(env, sock_path: str = SOCKET, fork=os.fork, log=_log_default) -
 
     if not USER_RE.match(user):
         return refuse("not an account name")
-    if cn != user:
+    if not certificate_belongs_to(cn, user):
         return refuse(f"the certificate belongs to {cn!r}, not to {user!r}")
     if control and pending and pending_method(env, "x") is None:
         # before anything starts: an approval that nobody can see would hold the one approval port for its whole window

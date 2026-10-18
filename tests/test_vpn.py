@@ -288,6 +288,16 @@ class ScriptTest(VpnBase):
         self.assertEqual(self.approvals.flows, {})
         self.assertIn("mallory", open(env["auth_failed_reason_file"]).read())
 
+    def test_a_certificate_per_device_is_allowed_for_the_same_account(self):
+        for cn in (USER, f"{USER}@phone", f"{USER}@my-laptop.2"):
+            self.assertTrue(vpn.certificate_belongs_to(cn, USER), cn)
+        for cn in (f"{USER}x", f"x{USER}@phone", f"{USER}@", f"{USER}@a b", f"{USER}@{'d' * 33}", f"{USER}@a@b", "mallory@" + USER, f"@{USER}"):
+            self.assertFalse(vpn.certificate_belongs_to(cn, USER), cn)
+        env = self.env(common_name=f"{USER}@laptop")
+        self.assertEqual(vpn.authenticate(env, self.sock_path, fork=lambda: 4242, log=lambda t: None), 2)   # goes on to the approval
+        env = self.env(common_name="mallory@laptop", auth_pending_file=os.path.join(self.tmp.name, "apf3"))
+        self.assertEqual(vpn.authenticate(env, self.sock_path, fork=lambda: 4242, log=lambda t: None), 1)
+
     def test_a_bad_account_name_is_rejected(self):
         for name in ("", "Ro ot", "a/b", "x" * 40):
             self.assertEqual(vpn.authenticate(self.env(username=name, common_name=name), self.sock_path, log=lambda t: None), 1, name)
