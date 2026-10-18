@@ -345,6 +345,9 @@ class WebApp:
             if name == "grace":
                 grants.set_grace("sshd", float(value))
                 return "/admin", f"A phone approval now lasts {float(value):g} h for ssh (0 = every login asks)."
+            if name == "grace_vpn":
+                grants.set_grace("openvpn", float(value))
+                return "/admin", f"A device approval now lasts {float(value):g} h for the VPN (0 = every connection asks)."
             if name == "require":
                 grants.set_require("sshd", value == "on")
                 return "/admin", "Device required for ssh: " + ("on." if value == "on" else "off.")
@@ -813,6 +816,12 @@ def admin_page(viewer: Session, flash: str) -> str:
              f'<div class="dim">After one approval, logins from the same address need no new one for this long. 0 means every login asks.</div>'
              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace">'
              f'<input type="text" name="value" value="{sshd_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
+    vpn_grace = grants.grace_hours("openvpn")
+    grace += (f'<div class="card"><strong>How long one approval counts for the VPN</strong>: {vpn_grace:g} h'
+              f'<div class="dim">After one approval, a VPN connection from the same address needs no new one for this long. '
+              f'0 means every connection asks. A phone on mobile data often gets a new address, which needs a new approval anyway.</div>'
+              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace_vpn">'
+              f'<input type="text" name="value" value="{vpn_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
             + grace
@@ -1084,7 +1093,7 @@ def make_handler(app: WebApp):
 
         def admin_action(self, data: dict, s: Session) -> None:
             name, value = data.get("name", ""), (data.get("value") or "").strip()
-            if name == "grace":
+            if name in ("grace", "grace_vpn"):
                 try:
                     hours = float(value)
                 except ValueError:

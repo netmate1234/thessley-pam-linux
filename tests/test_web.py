@@ -525,6 +525,11 @@ class WebTest(WebBase):
         self.assertTrue(grants.requires_phone("sshd"))
         self.step_up("/admin/set", {"name": "grace", "value": "2"})
         self.assertEqual(grants.grace_hours("sshd"), 2)
+        self.assertEqual(grants.grace_hours("openvpn"), 0)                          # the VPN has its own, off until set
+        self.assertIn("How long one approval counts for the VPN", self.b.get("/admin")[1])
+        self.step_up("/admin/set", {"name": "grace_vpn", "value": "3"})
+        self.assertEqual(grants.grace_hours("openvpn"), 3)
+        self.assertEqual(grants.grace_hours("sshd"), 2)                             # and does not touch the ssh one
         self.step_up("/admin/set", {"name": "self_enroll", "value": "off"})
         self.assertFalse(grants.self_enroll_allowed())
         self.step_up("/admin/set", {"name": "show_link", "value": "off"})

@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_enroll import FakePhone  # noqa: E402
 from test_sudo import _post  # noqa: E402
-from thessley_pam import pam, protocol, store, vpn  # noqa: E402
+from thessley_pam import grants, pam, protocol, store, vpn  # noqa: E402
 
 USER = os.environ.get("USER") or "ubuntu"
 SETTINGS = {"enabled": True, "public_host": "vpn.example.org", "page_port": 47831, "socket_group": "", "wait": 8}
@@ -31,9 +31,12 @@ class VpnBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.saved = (store.BASE, store.USERS, store.ENROLLED, pam.machine.lan_ip, pam.PORT, pam._log, pam._say, pam.subprocess)
+        self.saved = (store.BASE, store.USERS, store.ENROLLED, pam.machine.lan_ip, pam.PORT, pam._log, pam._say, pam.subprocess,
+                      grants.RUN, grants.GRANTS)
         self.addCleanup(self.restore)
         store.BASE = self.tmp.name
+        grants.RUN = os.path.join(self.tmp.name, "run")          # passes and settings stay in the test's own folder
+        grants.GRANTS = os.path.join(grants.RUN, "grants")
         store.USERS = os.path.join(self.tmp.name, "users")
         store.ENROLLED = os.path.join(self.tmp.name, "enrolled")
         pam.machine.lan_ip = lambda: "127.0.0.1"
@@ -52,7 +55,8 @@ class VpnBase(unittest.TestCase):
         self.addCleanup(self.server.server_close)
 
     def restore(self):
-        (store.BASE, store.USERS, store.ENROLLED, pam.machine.lan_ip, pam.PORT, pam._log, pam._say, pam.subprocess) = self.saved
+        (store.BASE, store.USERS, store.ENROLLED, pam.machine.lan_ip, pam.PORT, pam._log, pam._say, pam.subprocess,
+         grants.RUN, grants.GRANTS) = self.saved
 
     def ask(self, user=USER, rhost="203.0.113.7"):
         """What OpenVPN's script (or its deferred child) does: one request, then lines until the verdict."""
@@ -71,6 +75,15 @@ class VpnBase(unittest.TestCase):
         body = {"credential_id": self.device["credential_id"], "action": action, "timestamp": ts, "signature": self.phone.sign(msg)}
         # the link names the public host; this test machine reaches the listener on its own address
         return q, _post(dict(q, h="127.0.0.1"), f"/thessley-pam/v1/vpn/{q['id']}/respond", body)
+
+    def flow_link2(self, index):
+        """The link of the index-th flow started (the first approval's flow is already finished)."""
+        for _ in range(50):
+            flows = list(self.approvals.flows.values())
+            if len(flows) > index and flows[index].link:
+                return flows[index].link
+            time.sleep(0.1)
+        self.fail("no approval link appeared")
 
     def flow_link(self):
         for _ in range(50):
@@ -149,6 +162,29 @@ class DaemonTest(VpnBase):
         conn3, f3, read3 = self.ask(rhost="198.51.100.9")   # another address is another approval
         self.addCleanup(conn3.close)
         self.assertNotEqual(read3()["url"], first)
+
+    def test_without_a_grace_time_every_connection_asks_and_with_one_the_same_address_is_let_in(self):
+        conn, f, read = self.ask()
+        self.addCleanup(conn.close)
+        read()
+        self.answer(self.flow_link())
+        self.assertTrue(read()["ok"])
+        self.assertEqual(grants.passes_of(USER), [])               # no grace time for the VPN: no pass was given
+        grants.set_grace("openvpn", 4)
+        conn2, f2, read2 = self.ask()
+        self.addCleanup(conn2.close)
+        self.assertIn("url", read2())                              # still asks: the pass is made by an approval under the new setting
+        self.answer(self.flow_link2(1))
+        self.assertTrue(read2()["ok"])
+        self.assertEqual([(p["service"], p["rhost"]) for p in grants.passes_of(USER)], [("openvpn", "203.0.113.7")])
+        conn3, f3, read3 = self.ask()                              # the same address again
+        self.addCleanup(conn3.close)
+        done = read3()
+        self.assertEqual((done["done"], done["ok"]), (True, True))     # no page, no approval
+        self.assertNotIn("url", done)
+        conn4, f4, read4 = self.ask(rhost="198.51.100.9")          # another address still has to be approved
+        self.addCleanup(conn4.close)
+        self.assertIn("url", read4())
 
     def test_a_pass_from_an_earlier_approval_needs_no_new_one(self):
         runner_calls = []
