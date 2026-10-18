@@ -14,6 +14,7 @@ anybody's phone ask. The script also insists that the certificate's common name 
 """
 
 import base64
+import contextlib
 import html
 import json
 import os
@@ -25,6 +26,7 @@ import ssl
 import sys
 import threading
 import time
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import grants, machine, pam, store
@@ -69,13 +71,40 @@ class Flow:
                 self.ready.set()
 
 
+MAX_BODY = 64 * 1024
+
+
 class Approvals:
-    """The flows in progress. `runner` is pam.run; tests give a stand-in."""
+    """The flows in progress. `runner` is pam.run; tests give a stand-in.
+
+    The device's answers do not come to a listener of their own, one per approval, on a port that may be taken (the one forwarded
+    port was shared with every other approval on the computer). They come to the permanent HTTPS server of the QR page, at
+    /thessley-pam/v1/vpn/<request id>/respond; the link carries that server's port and certificate fingerprint. Any number of
+    approvals can be open at once, and nothing opens or closes a port per approval."""
 
     def __init__(self, settings=grants.vpn_settings, runner=pam.run):
         self.settings, self.runner = settings, runner
         self.flows: dict[str, Flow] = {}
         self.lock = threading.Lock()
+        self.routes: dict[str, object] = {}     # path -> (client address, body) -> (status, reply)
+        self.page_fingerprint = ""              # the page server's certificate, set when it starts
+
+    @contextlib.contextmanager
+    def listening(self, ip: str, routes: dict):
+        """What pam.run uses instead of a listener of its own: register the routes on the page server for as long as the approval
+        is open. The link gets the page server's public port and certificate."""
+        with self.lock:
+            self.routes.update(routes)
+        try:
+            yield types.SimpleNamespace(port=self.settings()["page_port"], fingerprint=self.page_fingerprint)
+        finally:
+            with self.lock:
+                for path in routes:
+                    self.routes.pop(path, None)
+
+    def route(self, path: str):
+        with self.lock:
+            return self.routes.get(path)
 
     def sweep(self) -> None:
         now = time.time()
@@ -116,7 +145,7 @@ class Approvals:
         env = {"PAM_TYPE": "auth", "PAM_USER": flow.user, "PAM_SERVICE": SERVICE, "PAM_RHOST": flow.rhost, "PAM_TTY": "vpn",
                "PAM_PUBLIC_HOST": st["public_host"], "PAM_ALWAYS_LINK": "1"}
         try:
-            rc = self.runner(env, say=flow.say, wait=st["wait"], req_type="vpn")
+            rc = self.runner(env, say=flow.say, wait=st["wait"], req_type="vpn", listening=self.listening)
         except Exception as exc:  # strict: any trouble is a refusal
             flow.say(f"error: {exc!r}")
             rc = pam.REFUSED
@@ -251,6 +280,29 @@ def make_page_handler(approvals: Approvals, qr_svg):
             self.end_headers()
             self.wfile.write(body)
 
+        def do_POST(self) -> None:  # noqa: N802
+            """The device's answer to a VPN approval: only the routes of approvals that are open right now exist."""
+            route = approvals.route(self.path.split("?")[0])
+            if route is None:
+                return self.json(404, {"result": "error", "message": "Not found."})
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length <= 0 or length > MAX_BODY:
+                return self.json(400, {"result": "error", "message": "Bad request body."})
+            try:
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError
+            except ValueError:
+                return self.json(400, {"result": "error", "message": "Body is not a JSON object."})
+            status, reply = route(self.client_address[0], body)
+            self.json(status, reply)
+
+        def json(self, status: int, obj: dict) -> None:
+            self.reply(status, json.dumps(obj).encode(), "application/json")
+
         def do_GET(self) -> None:  # noqa: N802
             m = re.fullmatch(r"/vpn/([0-9a-f]{32})(\.svg|\.json)?", self.path.split("?")[0])
             flow = approvals.get(m.group(1)) if m else None
@@ -279,17 +331,9 @@ def make_page_server(approvals: Approvals, ip: str, port: int, cert: str, key: s
     return httpd
 
 
-def apply_ports(st: dict) -> None:
-    """The device reaches this computer through the router, which forwards only some ports: use exactly those. The ssh and
-    sudo approvals walk up from 47810 to the next free port; here that would pick a port nobody can reach, so the default is the
-    one forwarded port and a busy port is a clean refusal ("address already in use"), not a device that cannot connect."""
-    pam.PORT, pam.PORT_TRIES = st["approval_port"], st["approval_tries"]
-
-
 def serve() -> int:
     from . import web
     st = grants.vpn_settings()
-    apply_ports(st)
     if not st["enabled"]:
         print("The VPN approval is switched off (sudo thessley-pam vpn on).")
         return 0
@@ -299,6 +343,7 @@ def serve() -> int:
     names = [ip, "127.0.0.1"] + ([st["public_host"]] if st["public_host"] else [])
     fingerprint = web.ensure_cert(cert, key, names)
     approvals = Approvals()
+    approvals.page_fingerprint = fingerprint        # the links carry this: the device's answers come to this server
     page = make_page_server(approvals, ip, st["page_port"], cert, key, web.qr_svg)
     threading.Thread(target=page.serve_forever, daemon=True).start()
     sock = make_socket_server(approvals, SOCKET, st["socket_group"])

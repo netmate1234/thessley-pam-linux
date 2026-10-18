@@ -9,7 +9,11 @@ with a QR code (or a text link); you scan it with the Thessley Passkey app and a
                               v
                      thessley-pam-vpn (root daemon) --- asks the device: link/QR, signed answer
                               ^                                  ^
-        client opens https://HOST:47830/vpn/ID (QR page)         phone connects to HOST:47810-47819
+        client opens https://HOST:47830/vpn/ID (QR page)         phone sends its answer to the same server, port 47830
+
+The page and the device's answer use **one** permanent HTTPS server (port 47830, a certificate that stays the same). The link
+carries that port and the certificate's fingerprint, so the phone still trusts exactly that server. Nothing opens a port for an
+approval, so approvals cannot fight over a port, and any number can be open at once.
 
 OpenVPN needs version 2.6 or newer for the page ("pending authentication", method `openurl`); older versions still work, but
 the client shows nothing while it waits, so the link has to be taken from elsewhere. Debian 13 ships 2.6.
@@ -31,11 +35,10 @@ the client shows nothing while it waits, so the link has to be taken from elsewh
 
 Forward these on your router to this computer (nothing else needs to be reachable):
 
-| Port | What | When it listens |
-|---|---|---|
-| UDP 1194 | OpenVPN | always |
-| TCP 47830 | the QR page (HTTPS, its own certificate) | always |
-| TCP 47810-47819 | the device's approval | only while an approval is waiting |
+| Port | What |
+|---|---|
+| UDP 1194 | OpenVPN |
+| TCP 47830 | the QR page and the device's approval (HTTPS, its own certificate) |
 
 The device checks the server's certificate fingerprint, which is in the link, so a man in the middle is detected. The browser
 warns once about the QR page's self-signed certificate: the page shows nothing secret (the QR code only helps your own

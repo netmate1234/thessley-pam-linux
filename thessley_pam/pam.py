@@ -61,7 +61,7 @@ QR_MARKER = "THESSLEY-QR "  # the GNOME Shell extension draws the QR code from t
 
 
 def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: float | None = None,
-        req_type: str | None = None) -> int:
+        req_type: str | None = None, listening=None) -> int:
     """sudo mode (default): a second step after the password; users without a device pass through.
 
     login mode (--login, /etc/pam.d/gdm-thessley): the device *instead of* the password, on the GNOME login
@@ -71,6 +71,7 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
     `say(line)` receives what the person should see (default: print it); the admin web page passes its own.
     """
     say = say or _say
+    listening = listening or _listening   # (ip, routes) -> a context manager yielding .port and .fingerprint
     wait = WAIT if wait is None else wait  # read now, not at import, so tests (and the web page) can change it
     if env.get("PAM_TYPE") != "auth":
         return REFUSED if login else OK  # gdm-thessley has no other auth step; never succeed by default
@@ -155,7 +156,7 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
 
     path = f"/thessley-pam/v1/{req_type}/{request_id}/respond"
     try:
-        with _listening(ip, {path: respond}) as lst:
+        with listening(ip, {path: respond}) as lst:
             link = f"thessleypam://{req_type}?" + urlencode({
                 "h": link_host, "p": lst.port, "fp": lst.fingerprint, "id": request_id, "n": nonce,
                 "m": mid, "hn": host, "u": username, "tty": tty,

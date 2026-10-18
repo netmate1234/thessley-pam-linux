@@ -8,7 +8,7 @@
 # It does NOT install or configure OpenVPN itself: docs/VPN.md has the server and client files. It installs:
 #   thessley-pam-vpn.service           the approval daemon (root): a unix socket for OpenVPN's script + the public QR page
 #   /usr/local/lib/thessley-pam/vpn-auth   what OpenVPN's auth-user-pass-verify runs (as OpenVPN's own user, never root)
-# The QR page listens on this computer's LAN address, port 47830; the device's approval on 47810-47819. Forward those on
+# The QR page and the device's answers share one HTTPS server on this computer's LAN address, port 47830. Forward that port on
 # your router (docs/VPN.md) only when you are ready. Undo: sudo ./uninstall-vpn.sh
 set -eu
 

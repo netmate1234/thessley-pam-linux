@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_enroll import FakePhone  # noqa: E402
 from test_sudo import _post  # noqa: E402
-from thessley_pam import grants, pam, protocol, store, vpn  # noqa: E402
+from thessley_pam import grants, pam, protocol, store, vpn, web  # noqa: E402
 
 USER = os.environ.get("USER") or "ubuntu"
 SETTINGS = {"enabled": True, "public_host": "vpn.example.org", "page_port": 47831, "socket_group": "", "wait": 8}
@@ -47,7 +47,16 @@ class VpnBase(unittest.TestCase):
         pam.subprocess = types.SimpleNamespace(run=lambda cmd, **kw: types.SimpleNamespace(stdout=""))
         self.phone = FakePhone()
         self.device = store.add_device(USER, self.phone.spki, "Test phone", [])
-        self.approvals = vpn.Approvals(settings=lambda: SETTINGS)
+        self.settings = dict(SETTINGS)
+        self.approvals = vpn.Approvals(settings=lambda: self.settings)
+        # the real page server, TLS and all: the device's answers come to it (one permanent port, a stable certificate)
+        cert, key = os.path.join(self.tmp.name, "vpn-cert.pem"), os.path.join(self.tmp.name, "vpn-key.pem")
+        self.approvals.page_fingerprint = web.ensure_cert(cert, key, ["127.0.0.1"])
+        self.page = vpn.make_page_server(self.approvals, "127.0.0.1", 0, cert, key, lambda link: b"<svg/>")
+        self.page_port = self.settings["page_port"] = self.page.server_address[1]
+        threading.Thread(target=self.page.serve_forever, daemon=True).start()
+        self.addCleanup(self.page.shutdown)
+        self.addCleanup(self.page.server_close)
         self.sock_path = os.path.join(self.tmp.name, "vpn.sock")
         self.server = vpn.make_socket_server(self.approvals, self.sock_path)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -99,7 +108,7 @@ class DaemonTest(VpnBase):
         conn, f, read = self.ask()
         self.addCleanup(conn.close)
         msg = read()
-        self.assertTrue(msg["url"].startswith("https://vpn.example.org:47831/vpn/"), msg)
+        self.assertTrue(msg["url"].startswith(f"https://vpn.example.org:{self.page_port}/vpn/"), msg)
         self.assertEqual(msg["timeout"], 8)
         q, (code, _) = self.answer(self.flow_link())
         self.assertEqual(code, 200)
@@ -120,8 +129,8 @@ class DaemonTest(VpnBase):
         self.assertIn("denied", done["reason"])
 
     def test_no_answer_in_time_refuses_the_login(self):
-        SETTINGS_SHORT = dict(SETTINGS, wait=2)
-        self.approvals.settings = lambda: SETTINGS_SHORT
+        short = dict(self.settings, wait=2)
+        self.approvals.settings = lambda: short
         pam.WAIT = 2
         conn, f, read = self.ask()
         self.addCleanup(conn.close)
@@ -139,20 +148,41 @@ class DaemonTest(VpnBase):
             self.assertEqual(done["ok"], False, user)
             self.assertIn(why.lower(), done["reason"].lower(), user)
 
-    def test_a_taken_approval_port_is_said_so_not_called_a_denial(self):
-        import socket as _s
-        hog = _s.socket()
-        hog.bind(("127.0.0.1", pam.PORT))
-        hog.listen()
-        self.addCleanup(hog.close)
-        pam.PORT_TRIES = 1
-        self.addCleanup(setattr, pam, "PORT_TRIES", 10)
+    def test_the_link_names_the_permanent_server_and_nothing_per_approval_is_opened(self):
         conn, f, read = self.ask()
         self.addCleanup(conn.close)
-        done = read()
-        self.assertEqual(done["ok"], False)
-        self.assertIn("approval port", done["reason"])
-        self.assertNotIn("denied", done["reason"])
+        read()
+        q = {k: v[0] for k, v in parse_qs(urlparse(self.flow_link()).query).items()}
+        self.assertEqual(int(q["p"]), self.page_port)                       # the page server's port, not a new one
+        self.assertEqual(q["fp"], self.approvals.page_fingerprint)          # its stable certificate
+        self.assertEqual(len(self.approvals.routes), 1)                     # this approval's route is registered on it...
+        self.answer(self.flow_link())
+        read()
+        for _ in range(30):
+            if not self.approvals.routes:
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.approvals.routes, {})                         # ...and gone when it is over
+
+    def test_several_approvals_at_once_do_not_fight_over_a_port(self):
+        pairs = []
+        for address in ("203.0.113.1", "203.0.113.2", "203.0.113.3"):
+            conn, f, read = self.ask(rhost=address)
+            self.addCleanup(conn.close)
+            self.assertIn("url", read())
+            pairs.append((conn, read))
+        links = [flow.link for flow in self.approvals.flows.values()]
+        self.assertEqual(len(links), 3)
+        self.assertEqual({parse_qs(urlparse(link).query)["p"][0] for link in links}, {str(self.page_port)})
+        for link in links:                                                   # each is answered on the same port
+            self.assertEqual(self.answer(link)[1][0], 200)
+        for conn, read in pairs:
+            self.assertTrue(read()["ok"])
+
+    def test_an_answer_for_an_approval_that_is_not_open_is_404_and_junk_is_refused(self):
+        q = {"h": "127.0.0.1", "p": str(self.page_port), "fp": self.approvals.page_fingerprint}
+        self.assertEqual(_post(q, "/thessley-pam/v1/vpn/NoSuchRequest/respond", {"credential_id": "x"})[0], 404)
+        self.assertEqual(_post(q, "/thessley-pam/v1/sudo/anything/respond", {})[0], 404)
 
     def test_garbage_on_the_socket_is_refused(self):
         conn = socket.socket(socket.AF_UNIX)
@@ -242,31 +272,6 @@ class EnrolTest(VpnBase):
         t.join(10)
 
 
-class PortsTest(unittest.TestCase):
-    def test_the_vpn_uses_only_the_forwarded_approval_port_by_default(self):
-        old = pam.PORT, pam.PORT_TRIES
-        try:
-            vpn.apply_ports(vpn.grants.vpn_settings())
-            self.assertEqual((pam.PORT, pam.PORT_TRIES), (47810, 1))
-            vpn.apply_ports({"approval_port": 47850, "approval_tries": 3})
-            self.assertEqual((pam.PORT, pam.PORT_TRIES), (47850, 3))
-        finally:
-            pam.PORT, pam.PORT_TRIES = old
-
-    def test_a_busy_forwarded_port_is_a_refusal_not_a_port_nobody_can_reach(self):
-        # port taken by another approval: with one try the next-free-port walk must not happen
-        import socket as _s
-        hog = _s.socket()
-        hog.bind(("127.0.0.1", 0))
-        hog.listen()
-        port = hog.getsockname()[1]
-        self.addCleanup(hog.close)
-        from thessley_pam import listener
-        with self.assertRaises(OSError):
-            with listener.listening("127.0.0.1", {}, port, 1):
-                pass
-
-
 class ScriptTest(VpnBase):
     """OpenVPN's auth-user-pass-verify: exit codes and the files it writes."""
 
@@ -297,7 +302,7 @@ class ScriptTest(VpnBase):
         self.assertEqual(rc, 2)                                           # deferred: the parent returns while the child waits
         timeout, method, url = open(env["auth_pending_file"]).read().split("\n")[:3]
         self.assertEqual((timeout, method), ("8", "openurl"))
-        self.assertTrue(url.startswith("https://vpn.example.org:47831/vpn/"))
+        self.assertTrue(url.startswith(f"https://vpn.example.org:{self.page_port}/vpn/"))
         self.assertFalse(os.path.exists(env["auth_control_file"]))        # nothing decided yet
 
     def test_the_method_follows_what_the_client_offers(self):
@@ -315,7 +320,7 @@ class ScriptTest(VpnBase):
         self.assertEqual(vpn.authenticate(env, self.sock_path, fork=lambda: 4242, log=lambda t: None), 2)
         timeout, method, extra = open(env["auth_pending_file"]).read().split("\n")[:3]
         self.assertEqual(method, "webauth")
-        self.assertTrue(extra.startswith("WEB_AUTH:external:https://vpn.example.org:47831/vpn/"), extra)
+        self.assertTrue(extra.startswith(f"WEB_AUTH:external:https://vpn.example.org:{self.page_port}/vpn/"), extra)
         env2 = self.env(IV_SSO="crtext", auth_pending_file=os.path.join(self.tmp.name, "apf2"))
         before = len(self.approvals.flows)
         self.assertEqual(vpn.authenticate(env2, self.sock_path, fork=lambda: 4242, log=lambda t: None), 1)
@@ -354,17 +359,14 @@ class ScriptTest(VpnBase):
 
 
 class PageTest(VpnBase):
-    """The public QR page. Plain HTTP here; the daemon wraps the same handler in TLS."""
-
-    def setUp(self):
-        super().setUp()
-        self.httpd = vpn.ThreadingHTTPServer(("127.0.0.1", 0), vpn.make_page_handler(self.approvals, lambda link: b"<svg/>"))
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.shutdown)
-        self.addCleanup(self.httpd.server_close)
+    """The public QR page, over the same TLS server that takes the device's answers."""
 
     def get(self, path):
-        c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        c = http.client.HTTPSConnection("127.0.0.1", self.page_port, context=ctx, timeout=10)
         c.request("GET", path)
         r = c.getresponse()
         return r.status, dict(r.getheaders()), r.read().decode(errors="replace")

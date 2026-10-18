@@ -9,7 +9,7 @@
     sudo thessley-pam enroll-me [--link]            a user adds a device for their own account (see install-selfenroll.sh)
     sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd device needs the 1st to approve
     sudo thessley-pam web [status|on|off|serve|listen ADDR|port N|session MIN|cert FILE KEY]   the admin web page (web.py)
-    sudo thessley-pam vpn [status|on|off|enroll [USER]|mark CRED [USER]|unmark CRED [USER]|public-host NAME|page-port N|group G|wait SEC|approval-port N|approval-tries N]   the OpenVPN second step (vpn.py)
+    sudo thessley-pam vpn [status|on|off|enroll [USER]|mark CRED [USER]|unmark CRED [USER]|public-host NAME|page-port N|group G|wait SEC]   the OpenVPN second step (vpn.py)
     sudo thessley-pam passes                            who holds a device pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a device login unlock the GNOME keyring (see keyring.py)
@@ -343,13 +343,12 @@ def cmd_vpn(args) -> int:
                 subprocess.run(["systemctl", "restart", "thessley-pam-vpn"], capture_output=True, check=False)
         elif action == "on":
             print("The service is not installed yet: run  sudo ./install-vpn.sh  (then it starts on its own).")
-    elif action in ("public-host", "page-port", "group", "wait", "approval-port", "approval-tries"):
+    elif action in ("public-host", "page-port", "group", "wait"):
         if len(values) != 1:
             sys.exit(f"Usage: thessley-pam vpn {action} VALUE")
-        key = {"public-host": "public_host", "page-port": "page_port", "group": "socket_group", "wait": "wait",
-               "approval-port": "approval_port", "approval-tries": "approval_tries"}[action]
+        key = {"public-host": "public_host", "page-port": "page_port", "group": "socket_group", "wait": "wait"}[action]
         value = values[0]
-        if key in ("page_port", "wait", "approval_port", "approval_tries"):
+        if key in ("page_port", "wait"):
             if not value.isdigit():
                 sys.exit(f"{action} takes a number.")
             value = int(value)
@@ -357,13 +356,12 @@ def cmd_vpn(args) -> int:
             sys.exit("A host name or an address, nothing else.")
         grants.set_vpn(**{key: value})
     elif action != "status":
-        sys.exit("Say status, on, off, enroll, mark, unmark, serve, auth, public-host, page-port, group, wait, approval-port or approval-tries.")
+        sys.exit("Say status, on, off, enroll, mark, unmark, serve, auth, public-host, page-port, group or wait.")
     st = grants.vpn_settings()
     host = st["public_host"] or machine.lan_ip()
     print(f"VPN approval: {'ON' if st['enabled'] else 'off'}   link host {host}   QR page port {st['page_port']}   "
           f"approval window {st['wait']} s   socket group {st['socket_group']}\n"
-          f"  the device connects to port {st['approval_port']}" + (f" (or the next {st['approval_tries'] - 1})" if st["approval_tries"] > 1 else " only")
-          + ": forward exactly these on the router")
+          f"  the device connects to the QR page's port {st['page_port']} as well: it is the only TCP port to forward")
     if not st["public_host"]:
         print("No public host is set: devices outside this network cannot reach the approval.  sudo thessley-pam vpn public-host NAME")
     return 0
@@ -610,8 +608,7 @@ def main(argv=None) -> int:
     wb.add_argument("values", nargs="*")
     wb.set_defaults(func=cmd_web)
     vp = sub.add_parser("vpn", help="the OpenVPN second step: a device must approve after the client certificate")
-    vp.add_argument("action", nargs="?", choices=("status", "on", "off", "enroll", "mark", "unmark", "serve", "auth", "public-host", "page-port", "group", "wait",
-                                              "approval-port", "approval-tries"))
+    vp.add_argument("action", nargs="?", choices=("status", "on", "off", "enroll", "mark", "unmark", "serve", "auth", "public-host", "page-port", "group", "wait"))
     vp.add_argument("values", nargs="*")
     vp.set_defaults(func=cmd_vpn)
     se = sub.add_parser("self-enroll", help="allow or forbid users adding their own first device")

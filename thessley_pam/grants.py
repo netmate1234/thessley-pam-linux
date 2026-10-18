@@ -91,8 +91,7 @@ def set_self_enroll(on: bool) -> None:
 WEB_DEFAULTS = {"enabled": False, "listen": "", "port": 47820, "session_minutes": 15, "cert": "", "key": ""}
 
 
-VPN_DEFAULTS = {"enabled": False, "public_host": "", "page_port": 47830, "socket_group": "nogroup", "wait": 180,
-                "approval_port": 47810, "approval_tries": 1}
+VPN_DEFAULTS = {"enabled": False, "public_host": "", "page_port": 47830, "socket_group": "nogroup", "wait": 180}
 
 
 def vpn_settings() -> dict:
@@ -108,11 +107,8 @@ def vpn_settings() -> dict:
     try:
         out["page_port"] = min(max(int(out["page_port"]), 1), 65535)
         out["wait"] = min(max(int(out["wait"]), 30), 600)
-        out["approval_port"] = min(max(int(out["approval_port"]), 1), 65535)
-        out["approval_tries"] = min(max(int(out["approval_tries"]), 1), 10)
     except (TypeError, ValueError):
-        for k in ("page_port", "wait", "approval_port", "approval_tries"):
-            out[k] = VPN_DEFAULTS[k]
+        out["page_port"], out["wait"] = VPN_DEFAULTS["page_port"], VPN_DEFAULTS["wait"]
     out["enabled"] = bool(out["enabled"])
     return out
 
