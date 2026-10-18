@@ -96,9 +96,12 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
 
     # A configured pass needs no new approval until it runs out. Never for the login screen.
     rhost = env.get("PAM_RHOST", "") or grants.LOCAL
-    grace = 0.0 if login else grants.grace_hours(service)
+    # Set only by the root-owned PAM module for a keyless QR-only authentication path.
+    # This keeps remembered approval passes from bypassing the explicit QR-only choice.
+    qr_only = service == "sshd" and env.get("PAM_QR_ONLY") == "1"
+    grace = 0.0 if login or qr_only else grants.grace_hours(service)
     pass_rhost = "*" if grants.grace_any_ip(service) else rhost
-    if grace > 0:
+    if grace > 0 and not qr_only:
         try:
             held = grants.valid(username, service, pass_rhost, {d["credential_id"] for d in devices})
         except OSError:

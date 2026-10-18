@@ -45,6 +45,66 @@
 #define TOTAL_WAIT_S 130  /* the helper's approval wait (90 s) plus the time to read its text, with margin */
 #define NOTE_DIR "/run/thessley-pam/notes"
 #define NOTE_MAX_AGE_S 120
+#define SSH_LOGIN_MODE_FILE "/etc/thessley-pam/ssh-login-mode"
+
+enum { SSH_POLICY_QR_ONLY = 1, SSH_POLICY_KEY_QR = 2, SSH_POLICY_KEY_PASSWORD = 4 };
+
+/* Missing, malformed, or unsafe settings allow key + QR, with key + password recovery. */
+static int ssh_login_policy(void)
+{
+    char value[32] = {0};
+    int fd = open(SSH_LOGIN_MODE_FILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+        return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0022) || st.st_size > 16) {
+        close(fd);
+        return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+    }
+    ssize_t n = read(fd, value, sizeof value - 1);
+    close(fd);
+    if (n <= 0 || n >= (ssize_t)sizeof value - 1)
+        return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+    value[n] = '\0';
+    if (n > 0 && value[n - 1] == '\n')
+        value[n - 1] = '\0';
+    if (strcmp(value, "phone") == 0 || strcmp(value, "qk") == 0 || strcmp(value, "K") == 0)
+        return SSH_POLICY_KEY_QR;
+    if (strcmp(value, "fallback") == 0 || strcmp(value, "qkp") == 0 || strcmp(value, "KP") == 0)
+        return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+    if (strcmp(value, "password") == 0 || strcmp(value, "kp") == 0 || strcmp(value, "P") == 0)
+        return SSH_POLICY_KEY_PASSWORD;
+    if (strcmp(value, "qr") == 0 || strcmp(value, "q") == 0 || strcmp(value, "O") == 0)
+        return SSH_POLICY_QR_ONLY;
+    if (strcmp(value, "qr-password") == 0 || strcmp(value, "qp") == 0 || strcmp(value, "OP") == 0)
+        return SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_PASSWORD;
+    if (strcmp(value, "OK") == 0)
+        return SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR;
+    if (strcmp(value, "OKP") == 0)
+        return SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+    return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+}
+
+/* OpenSSH 7.8+ exposes prior successful methods to PAM as SSH_AUTH_INFO_0. */
+static int ssh_has_publickey(pam_handle_t *pamh)
+{
+    const char *info = pam_getenv(pamh, "SSH_AUTH_INFO_0");
+    if (!info)
+        return 0;
+    while (*info) {
+        while (*info == '\n' || *info == '\r')
+            info++;
+        const char *end = strchr(info, '\n');
+        size_t len = end ? (size_t)(end - info) : strlen(info);
+        if (len >= 9 && memcmp(info, "publickey", 9) == 0 &&
+            (len == 9 || info[9] == ' ' || info[9] == '\t'))
+            return 1;
+        if (!end)
+            break;
+        info = end + 1;
+    }
+    return 0;
+}
 
 static int safe(const char *s)
 {
@@ -142,6 +202,18 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
     if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !safe(user) || geteuid() != 0)
         return PAM_AUTH_ERR;
 
+    int is_sshd = strcmp(item(pamh, PAM_SERVICE), "sshd") == 0;
+    int policy = is_sshd ? ssh_login_policy() : SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR;
+    int has_key = is_sshd && ssh_has_publickey(pamh);
+    int qr_only_path = is_sshd && !has_key && (policy & SSH_POLICY_QR_ONLY);
+    if (is_sshd && !has_key && !qr_only_path)
+        return PAM_MAXTRIES;
+    if (is_sshd && has_key && !(policy & SSH_POLICY_KEY_QR)) {
+        if (!(policy & SSH_POLICY_KEY_PASSWORD))
+            return PAM_MAXTRIES;
+        return PAM_AUTH_ERR;  /* Key plus account password; PAM continues to common-auth. */
+    }
+
     char e_user[320], e_service[320], e_rhost[320], e_tty[320];
     snprintf(e_user, sizeof e_user, "PAM_USER=%s", user);
     snprintf(e_service, sizeof e_service, "PAM_SERVICE=%s", item(pamh, PAM_SERVICE));
@@ -161,9 +233,11 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
         if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 2); }
         dup2(fds[1], 1);
         char *const args[] = { (char *)HELPER, (char *)"--marker", NULL };
-        char *const env[] = { (char *)"PAM_TYPE=auth", e_user, e_service, e_rhost, e_tty,
-                              (char *)"PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
-        execve(HELPER, args, env);
+        char *const qr_only_env[] = { (char *)"PAM_TYPE=auth", e_user, e_service, e_rhost, e_tty,
+                                      (char *)"PAM_QR_ONLY=1", (char *)"PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+        char *const regular_env[] = { (char *)"PAM_TYPE=auth", e_user, e_service, e_rhost, e_tty,
+                                      (char *)"PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+        execve(HELPER, args, qr_only_path ? qr_only_env : regular_env);
         _exit(127);
     }
     close(fds[1]);
@@ -228,14 +302,13 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
         nanosleep(&nap, NULL);
     }
     int ok = done && WIFEXITED(status) && WEXITSTATUS(status) == 0;
-    int explained = 0;  /* a refusal was shown to the person: tell sshd not to ask again (PAM_MAXTRIES) */
     if (!marker_seen && len > 0) {
         /* A pass was used: leave the note for the session step. Anything else (a refusal, no phone): say it now. */
         if (ok) {
             if (!write_note(pamh, text))
                 pam_info(pamh, "%s", text);
         } else {
-            explained = say_refusal(pamh, text);
+            say_refusal(pamh, text);
         }
     } else if (marker_seen && !ok && done) {
         /* The helper printed its verdict after the wait line ("no answer", "denied"): collect and show it. */
@@ -255,10 +328,14 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
                 break;
         }
         after[m] = '\0';
-        explained = say_refusal(pamh, after);
+        say_refusal(pamh, after);
     }
     close(fds[0]);
-    return ok ? PAM_SUCCESS : (explained ? PAM_MAXTRIES : PAM_AUTH_ERR);
+    if (ok)
+        return PAM_SUCCESS;
+    if ((policy & SSH_POLICY_KEY_PASSWORD) && has_key)
+        return PAM_AUTH_ERR;  /* Continue to common-auth, which asks for the account password. */
+    return PAM_MAXTRIES;  /* Phone-required mode must fail closed, including on helper errors. */
 }
 
 PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)

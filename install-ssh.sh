@@ -13,12 +13,12 @@
 #
 #   /etc/ssh/sshd_config (end of the file):
 #       Match Group thessley-ssh
-#           AuthenticationMethods publickey,keyboard-interactive:pam
+#           AuthenticationMethods publickey,keyboard-interactive:pam keyboard-interactive:pam
 #           KbdInteractiveAuthentication yes
 #
 #   /etc/pam.d/sshd (before "@include common-auth"):
 #       auth  [success=ignore default=1]  pam_succeed_if.so quiet user ingroup thessley-ssh
-#       auth  [success=done default=die]  pam_thessley_phone.so
+#       auth  [success=done auth_err=ignore default=die]  pam_thessley_phone.so
 #   and, before "@include common-session" (optional; prints the "approved earlier" note once for shell logins):
 #       session  optional  pam_thessley_phone.so
 #

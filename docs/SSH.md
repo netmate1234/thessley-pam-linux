@@ -45,13 +45,13 @@ group, as below.
 `/etc/ssh/sshd_config`, at the end of the file (a `Match` block must be last):
 
     Match Group thessley-ssh
-        AuthenticationMethods publickey,keyboard-interactive:pam
+        AuthenticationMethods publickey,keyboard-interactive:pam keyboard-interactive:pam
         KbdInteractiveAuthentication yes
 
 `/etc/pam.d/sshd`, before `@include common-auth`:
 
     auth  [success=ignore default=1]  pam_succeed_if.so quiet user ingroup thessley-ssh
-    auth  [success=done default=die]  pam_thessley_phone.so
+    auth  [success=done auth_err=ignore default=die]  pam_thessley_phone.so
 
 and, before `@include common-session` (optional: it only prints the "approved earlier" note once for shell logins; without it
 that note is simply not shown):
@@ -62,6 +62,20 @@ When the phone step refuses (no phone enrolled, no answer in time, denied), the 
 ("... Press Enter:") and tells sshd not to retry, so the person sees why and the connection ends with "Too many
 authentication failures". Plain PAM text would not do: sshd drops it when a login fails, and the client would only say
 "Permission denied (keyboard-interactive)".
+
+The admin web page has three independent login paths for members of `thessley-ssh`:
+
+- **QR-only:** no SSH key or account password; each login requires a fresh phone approval and ignores saved SSH passes.
+- **SSH key + QR approval:** a public key is required, followed by phone approval. A saved SSH pass may apply.
+- **SSH key + account password:** a public key and the account password are required. If this and key + QR are both
+  enabled, missing phone enrollment, a denied approval, or a timeout can fall back to the account password.
+
+Select any combination, with at least one path enabled. For QR-only or key + password, select those two checkboxes and
+leave key + QR unchecked. The settings page and its POST action are restricted to administrators. Changes take effect
+on the next login. Keep `AuthenticationMethods` set to both alternatives shown above; the PAM module checks OpenSSH's
+`SSH_AUTH_INFO_0` to enforce key requirements. That value is provided to PAM by OpenSSH 7.8 and newer; if it is
+missing, key-required policies fail closed. With no valid policy file, the default enables key + QR and key + password
+recovery. QR-only remains an explicit opt-in.
 
 Everyone not in the group keeps the old rules: the two PAM lines are skipped for them, and password and
 keyboard-interactive logins stay switched off by `sshd_config` as before.

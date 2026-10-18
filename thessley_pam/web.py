@@ -355,6 +355,15 @@ class WebApp:
             if name == "require":
                 grants.set_require("sshd", value == "on")
                 return "/admin", "Device required for ssh: " + ("on." if value == "on" else "off.")
+            if name == "ssh_login_mode":
+                grants.set_ssh_login_mode(value)
+                labels = {
+                    "phone": "SSH now requires a key and phone approval.",
+                    "fallback": "SSH now prefers phone approval and falls back to the account password.",
+                    "password": "SSH now requires a key and account password; phone approval is off.",
+                    "qr": "SSH now requires a fresh QR phone approval; no SSH key or account password is used.",
+                }
+                return "/admin", labels[value]
             if name == "self_enroll":
                 grants.set_self_enroll(value == "on")
                 return "/admin", "Users adding their own device: " + ("on." if value == "on" else "off.")
@@ -367,6 +376,20 @@ class WebApp:
                     open(flag, "w").close()
                 return "/admin", "Text links in approvals: " + ("on." if value == "on" else "off.")
             raise ValueError("unknown setting")
+        return run
+
+    def change_ssh_policy(self, qr_only: bool, key_qr: bool, key_password: bool):
+        def run():
+            grants.set_ssh_login_paths(qr_only, key_qr, key_password)
+            paths = []
+            if qr_only:
+                paths.append("QR-only with fresh phone approval")
+            if key_qr:
+                paths.append("SSH key + QR approval")
+            if key_password:
+                paths.append("SSH key + account password")
+            message = "SSH login paths saved: " + "; ".join(paths) + "."
+            return "/admin", message
         return run
 
     # -- per-key details
@@ -616,6 +639,8 @@ button{padding:9px 14px;border-radius:8px;border:1px solid var(--line);backgroun
 .btn.small{padding:7px 12px;font-size:.9rem}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button.danger{color:var(--danger);border-color:var(--danger)}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}.row form{display:inline}
+.ssh-policy-options{display:grid;gap:8px;margin:12px 0}.ssh-policy-options label{display:flex;gap:9px;align-items:flex-start}
+.ssh-policy-options input[type=checkbox]{width:1.1rem;height:1.1rem;flex:0 0 auto;margin:.2rem 0 0}
 .flash{border-left:4px solid var(--ok);padding:8px 12px;margin:10px 0;background:var(--card)}
 code,.mono{font-family:ui-monospace,monospace;word-break:break-all;font-size:.85rem}
 .qr{display:block;margin:12px auto;background:#fff;padding:6px;border-radius:8px;width:min(100%,520px);max-width:100%;height:auto}
@@ -869,6 +894,25 @@ def admin_page(viewer: Session, flash: str) -> str:
                 f'<button name="value" value="{"off" if state else "on"}">Switch {"off" if state else "on"}</button></form></div>')
 
     ssh_any_ip = grants.grace_any_ip("sshd")
+    ssh_policy = grants.ssh_login_policy()
+    ssh_policy = (f'<div class="card"><strong>SSH login policy</strong>'
+                  '<div class="dim">Applies only to accounts in the thessley-ssh group. '
+                  'Changes are applied to the next SSH login.</div>'
+                  f'<form method="post" action="/admin/set">{hidden}'
+                  '<input type="hidden" name="name" value="ssh_policy">'
+                  '<div class="ssh-policy-options">'
+                  f'<label><input type="checkbox" name="qr_only" value="on"{" checked" if ssh_policy["qr_only"] else ""}> <span>QR-only login (no key or password on this path)</span></label>'
+                  f'<label><input type="checkbox" name="key_qr" value="on"{" checked" if ssh_policy["key_qr"] else ""}> <span>SSH key + QR phone approval</span></label>'
+                  f'<label><input type="checkbox" name="key_password" value="on"{" checked" if ssh_policy["key_password"] else ""}> <span>Allow SSH key + account password (recovery if QR is unavailable)</span></label>'
+                  '</div>'
+                  '<button>Save SSH policy</button></form>'
+                  '<div class="dim"><p>Each checked box enables a complete alternative login path (OR). A login only needs to complete one selected path.</p>'
+                  '<ul><li><strong>QR-only:</strong> no SSH key is needed, but every login needs fresh phone approval. Saved approval passes are ignored.</li>'
+                  '<li><strong>SSH key + QR:</strong> provide an SSH key, then approve on the phone. The configured approval pass may apply.</li>'
+                  '<li><strong>SSH key + password:</strong> provide an SSH key and the account password. This route always requires a key.</li></ul>'
+                  '<p><strong>Examples:</strong> QR-only by itself permits only fresh QR logins. SSH key + QR together with SSH key + password tries phone approval first; '
+                  'the password route can recover if no phone is enrolled, approval is denied, or it times out. QR-only together with SSH key + password '
+                  'permits keyless QR logins or key + password logins.</p></div></div>')
     grace = (f'<div class="card"><strong>How long one approval counts for ssh</strong>: {sshd_grace:g} h'
              f'<div class="dim">After one approval, logins from the configured IP scope need no new one for this long. 0 means every login asks.</div>'
              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace">'
@@ -881,11 +925,9 @@ def admin_page(viewer: Session, flash: str) -> str:
               f'<input type="text" name="value" value="{session}" style="width:6rem"> minutes <button>Change</button></form></div>')
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
-            + grace
+            + ssh_policy + grace
             + toggle("ssh_any_ip", "SSH passes from any client IP", ssh_any_ip,
                      "Cloud hosts can allow an approved SSH pass from changing client IPs. The pass still expires normally.")
-            + toggle("require", "Device required for ssh", grants.requires_phone("sshd"),
-                     "Accounts in the ssh group with no enrolled device are refused instead of let through.")
             + toggle("self_enroll", "Users may add their own device", grants.self_enroll_allowed(),
                      "thessley-pam enroll-me: the first device freely, more with an approval.")
             + toggle("show_link", "Text links in approvals", store.show_link(),
@@ -1151,6 +1193,15 @@ def make_handler(app: WebApp):
 
         def admin_action(self, data: dict, s: Session) -> None:
             name, value = data.get("name", ""), (data.get("value") or "").strip()
+            if name == "ssh_policy":
+                qr_only = data.get("qr_only") == "on"
+                key_qr = data.get("key_qr") == "on"
+                key_password = data.get("key_password") == "on"
+                if not (qr_only or key_qr or key_password):
+                    return self.html(400, "Not valid", flash_html("Select at least one SSH login path."), s)
+                self.start_change(s, "changing the SSH login policy",
+                                  app.change_ssh_policy(qr_only, key_qr, key_password))
+                return
             if name == "grace":
                 try:
                     hours = float(value)
@@ -1165,6 +1216,9 @@ def make_handler(app: WebApp):
                     minutes = -1
                 if not 1 <= minutes <= 240:
                     return self.html(400, "Not valid", flash_html("Give a number of minutes from 1 to 240."), s)
+            elif name == "ssh_login_mode":
+                if value not in grants.SSH_LOGIN_MODES:
+                    return self.html(400, "Not valid", flash_html("Choose a supported SSH login policy."), s)
             elif name in ("require", "self_enroll", "show_link", "ssh_any_ip"):
                 if value not in ("on", "off"):
                     return self.html(400, "Not valid", flash_html("Choose on or off."), s)

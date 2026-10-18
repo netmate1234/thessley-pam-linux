@@ -72,10 +72,118 @@ def requires_phone(service: str) -> bool:
     """True if a user with no enrolled (active) phone is refused for this service instead of passing through.
     Off by default, as it is for sudo (so nobody who never opted in is locked out); on for ssh, where the phone is
     the only second step and a missing phone would silently mean no second step at all."""
+    if service == "sshd":
+        policy = ssh_login_policy()
+        return policy["qr_only"] or policy["key_qr"]
     try:
         return service in list(_load_config().get("require", []))
     except TypeError:
         return False
+
+
+SSH_LOGIN_POLICY_DEFAULT = {"qr_only": False, "key_qr": True, "key_password": True}
+# O = keyless, fresh QR approval; K = SSH key + QR; P = SSH key + password.
+# Older values remain readable so an upgrade preserves the existing setting.
+_SSH_LOGIN_POLICIES = {
+    "phone": {"qr_only": False, "key_qr": True, "key_password": False},
+    "fallback": {"qr_only": False, "key_qr": True, "key_password": True},
+    "password": {"qr_only": False, "key_qr": False, "key_password": True},
+    "qr": {"qr_only": True, "key_qr": False, "key_password": False},
+    "qr-password": {"qr_only": True, "key_qr": False, "key_password": True},
+    "qk": {"qr_only": False, "key_qr": True, "key_password": False},
+    "qkp": {"qr_only": False, "key_qr": True, "key_password": True},
+    "kp": {"qr_only": False, "key_qr": False, "key_password": True},
+    "q": {"qr_only": True, "key_qr": False, "key_password": False},
+    "qp": {"qr_only": True, "key_qr": False, "key_password": True},
+    "O": {"qr_only": True, "key_qr": False, "key_password": False},
+    "K": {"qr_only": False, "key_qr": True, "key_password": False},
+    "P": {"qr_only": False, "key_qr": False, "key_password": True},
+    "OK": {"qr_only": True, "key_qr": True, "key_password": False},
+    "OP": {"qr_only": True, "key_qr": False, "key_password": True},
+    "KP": {"qr_only": False, "key_qr": True, "key_password": True},
+    "OKP": {"qr_only": True, "key_qr": True, "key_password": True},
+}
+SSH_LOGIN_MODES = {
+    "phone": "SSH key + QR phone approval",
+    "fallback": "SSH key + QR phone approval or account password",
+    "password": "SSH key + account password",
+    "qr": "QR-only (phone approval; no SSH key or account password)",
+}
+SSH_LOGIN_MODE_PATH = os.path.join(store.BASE, "ssh-login-mode")
+
+
+def ssh_login_policy() -> dict[str, bool]:
+    """Return enabled SSH paths. Missing or invalid settings default to key + QR with key + password recovery."""
+    try:
+        with open(SSH_LOGIN_MODE_PATH, encoding="ascii") as f:
+            value = f.read(32).strip()
+        policy = _SSH_LOGIN_POLICIES.get(value, SSH_LOGIN_POLICY_DEFAULT)
+        return dict(policy)
+    except OSError:
+        return dict(SSH_LOGIN_POLICY_DEFAULT)
+
+
+def set_ssh_login_paths(qr_only: bool, key_qr: bool, key_password: bool) -> None:
+    """Atomically set allowed SSH paths, retaining the previous policy as a backup."""
+    if not (qr_only or key_qr or key_password):
+        raise ValueError("Select at least one SSH login path.")
+    value = ("O" if qr_only else "") + ("K" if key_qr else "") + ("P" if key_password else "")
+    store.ensure_dirs()
+    try:
+        with open(SSH_LOGIN_MODE_PATH, "rb") as previous:
+            old_value = previous.read(32)
+        backup = SSH_LOGIN_MODE_PATH + ".bak"
+        backup_fd, backup_tmp = tempfile.mkstemp(dir=store.BASE, prefix=".tmp.ssh-login-mode.bak.")
+        try:
+            with os.fdopen(backup_fd, "wb") as f:
+                f.write(old_value)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(backup_tmp, 0o600)
+            os.replace(backup_tmp, backup)
+        except BaseException:
+            if os.path.exists(backup_tmp):
+                os.unlink(backup_tmp)
+            raise
+    except FileNotFoundError:
+        pass
+    fd, tmp = tempfile.mkstemp(dir=store.BASE, prefix=".tmp.ssh-login-mode.")
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as f:
+            f.write(value + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, SSH_LOGIN_MODE_PATH)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def set_ssh_login_policy(qr: bool, qr_key: bool, password: bool) -> None:
+    """Compatibility wrapper for the previous three-flag policy API."""
+    set_ssh_login_paths(qr and not qr_key, qr and qr_key, password)
+
+
+def set_ssh_login_mode(mode: str) -> None:
+    """Compatibility wrapper for the earlier single-choice admin setting."""
+    if mode not in SSH_LOGIN_MODES:
+        raise ValueError("Choose phone, fallback, password, or qr.")
+    policy = _SSH_LOGIN_POLICIES[mode]
+    set_ssh_login_paths(policy["qr_only"], policy["key_qr"], policy["key_password"])
+
+
+def ssh_login_mode() -> str:
+    """Compatibility name for older integrations; policy details live in ssh_login_policy()."""
+    policy = ssh_login_policy()
+    if policy == {"qr_only": True, "key_qr": False, "key_password": False}:
+        return "qr"
+    if policy["key_qr"] and policy["key_password"]:
+        return "fallback"
+    if policy["key_qr"]:
+        return "phone"
+    return "password"
 
 
 def self_enroll_allowed() -> bool:
@@ -168,6 +276,11 @@ def set_web(**changes) -> dict:
 def set_require(service: str, on: bool) -> None:
     if not service or any(c in service for c in "/ \t\n\0") or service.startswith("."):
         raise ValueError("bad service name")
+    if service == "sshd":
+        # Keep the legacy CLI switch meaningful: disabling the phone selects account-password auth rather than
+        # allowing SSH through with no second factor.
+        set_ssh_login_policy(qr=on, qr_key=True, password=not on)
+        return
     store.ensure_dirs()
     data = _load_config()
     names = [n for n in data.get("require", []) if n != service]
