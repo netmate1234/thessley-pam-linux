@@ -29,4 +29,32 @@ install -o root -g root -m 0755 "$src/pam-helper" "$lib/pam-helper"
 install -o root -g root -m 0755 "$src/thessley-pam" /usr/local/sbin/thessley-pam
 find "$lib" -name __pycache__ -prune -exec rm -rf {} +
 
-echo "Installed to $lib and /usr/local/sbin/thessley-pam"
+unit=/etc/systemd/system/thessley-pam-approvals.service
+cat > "$unit" <<'UNIT'
+[Unit]
+Description=Thessley shared HTTPS listener for SSH and local phone approvals (VPN uses port 47830)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/thessley-pam approvals serve
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=thessley-pam
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectSystem=full
+ReadWritePaths=/etc/thessley-pam /run/thessley-pam
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+chmod 0644 "$unit"
+systemctl daemon-reload
+systemctl enable thessley-pam-approvals.service
+systemctl restart thessley-pam-approvals.service
+
+echo "Installed to $lib and /usr/local/sbin/thessley-pam; shared approval service is active on TCP port 47810."

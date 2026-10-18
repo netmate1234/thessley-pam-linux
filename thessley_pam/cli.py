@@ -10,6 +10,7 @@
     sudo thessley-pam self-enroll [on|off]          may users do that (on by default); the 2nd device needs the 1st to approve
     sudo thessley-pam web [status|on|off|serve|listen ADDR|port N|session MIN|cert FILE KEY]   the admin web page (web.py)
     sudo thessley-pam vpn [status|on|off|enroll [USER]|mark CRED [USER]|unmark CRED [USER]|public-host NAME|page-port N|group G|wait SEC]   the OpenVPN second step (vpn.py)
+    sudo thessley-pam approvals serve                      shared SSH/local QR listener (VPN remains on port 47830)
     sudo thessley-pam passes                            who holds a device pass right now
     sudo thessley-pam end-pass [--user NAME] [--service S]
     sudo thessley-pam keyring-link   [--user NAME]   let a device login unlock the GNOME keyring (see keyring.py)
@@ -613,6 +614,11 @@ def cmd_end_pass(args) -> int:
     return 0
 
 
+def cmd_approvals(args) -> int:
+    from . import approvals
+    return approvals.serve()
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="thessley-pam")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -632,6 +638,9 @@ def main(argv=None) -> int:
     vp.add_argument("action", nargs="?", choices=("status", "on", "off", "enroll", "mark", "unmark", "serve", "auth", "public-host", "page-port", "group", "wait"))
     vp.add_argument("values", nargs="*")
     vp.set_defaults(func=cmd_vpn)
+    apv = sub.add_parser("approvals", help="the shared HTTPS listener for SSH and local QR approvals")
+    apv.add_argument("action", choices=("serve",))
+    apv.set_defaults(func=cmd_approvals)
     se = sub.add_parser("self-enroll", help="allow or forbid users adding their own first device")
     se.add_argument("state", nargs="?", choices=("on", "off"))
     se.set_defaults(func=cmd_self_enroll)

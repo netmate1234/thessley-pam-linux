@@ -20,8 +20,9 @@ everywhere, only for networks you trust), `port N` (47820), `session MINUTES` (1
 ## Keep the page off the network (ssh tunnel)
 
 The page can listen on this computer only, so nothing on the network can reach it, and you open it through an ssh
-tunnel (your ssh login is approved with a device too). Approvals are not affected: the device talks to the short-lived
-listener on this computer's LAN address (ports 47810-47819), never to the page, so the QR code and the link work as before.
+tunnel (your ssh login is approved with a device too). Approval replies use the shared HTTPS listener on port 47810 on
+this computer's LAN address, never the admin page. Each approval has a separate temporary route, and all can use the
+same port concurrently.
 
     sudo thessley-pam web listen 127.0.0.1
     sudo thessley-pam web on                       (restarts the page with the new address)

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds and installs pam_thessley_phone.so, the phone step for ssh. The QR is sent as PAM informational text, so
-# keyboard-interactive SSH clients can display it without requiring an Enter response. Run after install.sh.
+# Builds and installs pam_thessley_phone.so, the phone step for ssh. install.sh installs and starts the shared HTTPS
+# approval listener; keyboard-interactive SSH clients display its QR informational text without requiring Enter.
 #
 #   sudo ./install-ssh.sh
 #

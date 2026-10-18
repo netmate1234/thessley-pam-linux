@@ -1,7 +1,7 @@
-"""A short-lived HTTPS listener the phone talks to while one request is open.
+"""HTTPS routing for one-time device approvals.
 
-Each run makes a throwaway self-signed certificate; its SHA-256 goes into the QR code and the app trusts
-exactly that certificate (PinnedClient.kt). Nothing about the TLS key is kept after the run.
+Normal approvals register temporary routes with the permanent, certificate-pinned service. Explicit non-default ports
+still use the short-lived listener below for local diagnostics and isolated development runs.
 """
 
 import contextlib
@@ -15,6 +15,7 @@ import socket
 import ssl
 import tempfile
 import threading
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
@@ -24,6 +25,9 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 MAX_BODY = 64 * 1024
+SHARED_PORT = 47810
+SHARED_SOCKET = "/run/thessley-pam/approvals.sock"
+MAX_FRAME = 128 * 1024
 
 # (path, parsed JSON body) -> (HTTP status, JSON reply). Raise nothing; return an error reply instead.
 Route = Callable[[str, dict], tuple[int, dict]]
@@ -57,8 +61,18 @@ def _make_cert(ip: str, tmp: str) -> tuple[str, str, str]:
 
 @contextlib.contextmanager
 def listening(ip: str, routes: dict, first_port: int, tries: int = 10):
-    """A listener on first_port, or on the next free port when another request is still waiting for its answer.
-    The port travels in the link, so the phone and the desktop app go wherever it ended up."""
+    """Register routes with the permanent listener; non-default ports remain available for local diagnostics."""
+    if first_port == SHARED_PORT and tries == 10:
+        registration = SharedRegistration(routes)
+        registration.open()
+        try:
+            yield SimpleNamespace(port=registration.port, fingerprint=registration.fingerprint)
+        finally:
+            registration.close()
+        return
+
+    # Explicit non-default ports are kept for diagnostics and isolated development runs. Normal PAM and enrolment
+    # traffic always uses the shared service above.
     lst = None
     for port in range(first_port, first_port + tries):
         candidate = Listener(ip, port, routes)
@@ -76,6 +90,113 @@ def listening(ip: str, routes: dict, first_port: int, tries: int = 10):
         yield lst
     finally:
         lst.__exit__(None, None, None)
+
+
+class SharedRegistration:
+    """A private Unix-socket channel to the shared HTTPS listener for one approval flow."""
+
+    def __init__(self, routes: dict[str, Route]):
+        self.routes = routes
+        self.conn = None
+        self.reader = None
+        self.port = SHARED_PORT
+        self.fingerprint = ""
+        self.closed = threading.Event()
+        self.send_lock = threading.Lock()
+        self.reader_thread = None
+
+    def open(self) -> None:
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            conn.connect(SHARED_SOCKET)
+            conn.settimeout(10)
+            self.conn = conn
+            self.reader = conn.makefile("rb", buffering=0)
+            payload = json.dumps({"op": "register", "paths": list(self.routes)}, separators=(",", ":")).encode() + b"\n"
+            conn.sendall(payload)
+            raw = self.reader.readline(MAX_FRAME + 1)
+            if len(raw) > MAX_FRAME or not raw.endswith(b"\n"):
+                raise OSError("The approval service sent an invalid registration reply.")
+            reply = json.loads(raw)
+            if not reply.get("ok"):
+                raise OSError(reply.get("message") or "The approval service refused this request.")
+            self.port = int(reply["port"])
+            self.fingerprint = str(reply["fingerprint"])
+            conn.settimeout(None)
+            self.reader_thread = threading.Thread(target=self._read_requests, daemon=True)
+            self.reader_thread.start()
+        except Exception:
+            self.close()
+            raise
+
+    def _send(self, item: dict) -> None:
+        raw = json.dumps(item, separators=(",", ":")).encode("utf-8") + b"\n"
+        if len(raw) > MAX_FRAME:
+            raise ValueError("Approval reply is too large.")
+        with self.send_lock:
+            if self.conn is None or self.closed.is_set():
+                raise OSError("The approval service connection is closed.")
+            self.conn.sendall(raw)
+
+    def _handle_request(self, item: dict) -> None:
+        request_id = str(item.get("id", ""))
+        try:
+            path = str(item["path"])
+            route = self.routes.get(path)
+            if route is None:
+                status, body = 404, {"result": "error", "message": "Not found."}
+            else:
+                client_ip = str(item.get("client_ip", ""))
+                payload = item.get("body")
+                if not isinstance(payload, dict):
+                    status, body = 400, {"result": "error", "message": "Body is not a JSON object."}
+                else:
+                    status, body = route(client_ip, payload)
+            self._send({"type": "response", "id": request_id, "status": int(status), "body": body})
+        except Exception:
+            try:
+                self._send({"type": "response", "id": request_id, "status": 500,
+                            "body": {"result": "error", "message": "Could not process this response."}})
+            except OSError:
+                pass
+
+    def _read_requests(self) -> None:
+        reader = self.reader
+        try:
+            while not self.closed.is_set():
+                raw = reader.readline(MAX_FRAME + 1)
+                if not raw:
+                    break
+                if len(raw) > MAX_FRAME or not raw.endswith(b"\n"):
+                    break
+                item = json.loads(raw)
+                if item.get("type") != "request":
+                    continue
+                threading.Thread(target=self._handle_request, args=(item,), daemon=True).start()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        finally:
+            self.closed.set()
+
+    def close(self) -> None:
+        if self.closed.is_set() and self.conn is None:
+            return
+        self.closed.set()
+        conn, self.conn = self.conn, None
+        reader, self.reader = self.reader, None
+        if conn is not None:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            conn.close()
+        if reader is not None:
+            try:
+                reader.close()
+            except OSError:
+                pass
+        if self.reader_thread is not None and self.reader_thread is not threading.current_thread():
+            self.reader_thread.join(timeout=1)
 
 
 class Listener:

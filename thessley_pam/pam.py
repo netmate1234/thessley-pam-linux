@@ -25,7 +25,6 @@ from urllib.parse import urlencode
 from . import grants, listener, machine, protocol, store
 
 PORT = 47810
-PORT_TRIES = 10  # logins at the same time each need a listener; the next free port from PORT is used (see _listening)
 WAIT = 90  # seconds to approve on the phone (unlock it, find the app; the ssh module's own limit is longer, see TOTAL_WAIT_S)
 
 OK, REFUSED = 0, 1
@@ -49,7 +48,7 @@ def _display_fields(service: str, rhost: str) -> dict:
 
 
 def _listening(ip: str, routes: dict):
-    return listener.listening(ip, routes, PORT, PORT_TRIES)
+    return listener.listening(ip, routes, PORT)
 
 
 def _say(text: str) -> None:
@@ -184,7 +183,7 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
             approved_in_time = done.wait(wait)
             time.sleep(0.5)  # let the phone receive its reply before the listener closes
     except OSError as e:
-        say(f"Thessley Passkey: could not start ({e.strerror}). Refusing.")
+        say(f"Thessley Passkey: could not start ({e.strerror or e}). Refusing.")
         _log(f"listener failed for {username}: {e}", warn=True)
         return REFUSED
 

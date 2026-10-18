@@ -23,16 +23,16 @@ machine. Keep the window short, and use `end-pass` when in doubt.
 
 ## Why there is a small PAM module for ssh
 
-sshd shows plain PAM text (the QR code) to the client only together with a *question*. So for ssh the phone step is
-`pam_thessley_phone.so`, which runs `pam-helper --marker`, shows the QR code with
-"Approve on your phone, then press Enter", and then waits for the helper's verdict. (`sudo` and the login screens keep
-`pam_exec`, which does not have this problem.) The ssh PAM service is always called `sshd`, whatever the binary is
-named, so there is no separate PAM service for a test instance: use `Match` blocks and a group, as below.
+For SSH, `pam_thessley_phone.so` runs `pam-helper --marker` and sends the QR as a PAM informational message. SSH
+keyboard-interactive displays that message without asking for a reply; the PAM worker waits for the phone approval and
+then SSH continues automatically. (`sudo` and the login screens keep `pam_exec`.) The SSH PAM service is always called
+`sshd`, whatever the binary is named, so there is no separate PAM service for a test instance: use `Match` blocks and a
+group, as below.
 
 ## Setup on the server
 
     sudo apt install qrencode python3-cryptography build-essential libpam0g-dev
-    sudo ./install.sh
+    sudo ./install.sh                                      # installs and starts the shared approval listener on TCP 47810
     sudo ./install-ssh.sh                                  # builds and installs pam_thessley_phone.so
 
     sudo groupadd thessley-ssh                             # who is affected
@@ -80,8 +80,8 @@ Keep one ssh session open while you try a new login, and keep a backup of both f
 
 ### Exempting an admin machine (scripts and deploys)
 
-Anything unattended (scripts, deploys, cron on another machine) cannot press Enter at a prompt. To keep the key alone
-for one user from one address, add this block **above** `Match Group thessley-ssh` (sshd uses the first value it
+Anything unattended (scripts, deploys, cron on another machine) has no person available to approve a phone request. To keep
+the key alone for one user from one address, add this block **above** `Match Group thessley-ssh` (sshd uses the first value it
 finds, so the order matters):
 
     Match User ubuntu Address 192.168.1.111
@@ -145,8 +145,12 @@ Things to know:
 - The approver and the ssh client are often the same PC. If that PC and the phone are lost together, no approver is
   left. Enrol a second computer, or keep a break-glass path: console access, or an account outside `thessley-ssh`
   that you only use to repair this.
-- Approval requests are answered over HTTPS on the LAN, so the PC has to reach the server on ports 47810-47819 while a
-  login waits. A second login while one is waiting uses the next port (47811, ...); this is why the link carries `p=`.
+- Approval requests are answered over HTTPS on the LAN through the shared listener on TCP port 47810. Each pending login
+  has its own temporary route and waits in its own PAM helper; another login or phone request can use the same listener at once.
+  The link carries the route ID and the listener's certificate fingerprint; it still carries `p=47810` for the app.
+  Allow inbound TCP 47810 from the phone's network (LAN or VPN); forward that one port on the router only when the phone must
+  reach the computer from outside.
+  OpenVPN approvals remain on their separate HTTPS listener on TCP port 47830.
 - The text link is printed by default (`Link: thessleypam://...`, above the QR code), for enrolment and for every
   approval, so a phone or computer that cannot scan the screen can still approve. It is not a secret: it works only for
   that one request and only with a signature from an enrolled approver. `sudo thessley-pam show-link off` hides it in
@@ -184,7 +188,7 @@ It shows the same QR code and 6-digit code, and the user types `yes`. How it sta
     sudo thessley-pam grace                   show the setting; --service sshd --hours 0 makes every login ask
 
 Logging in: the key is checked first (a wrong key never reaches the phone), then the QR code appears; scan it with
-the app, approve with your fingerprint, press Enter. In same-IP mode, the next logins from that address within the
+the app and approve with your fingerprint. SSH continues automatically. In same-IP mode, the next logins from that address within the
 window go straight in; with `--ip-scope any`, they can come from any address. A shell login shows "approved earlier, valid for another ..." once; `ssh host command` shows nothing. (sshd shows
 PAM text from the auth step again when it opens a shell, so the module leaves the note in `/run/thessley-pam/notes` and
 prints it in the session step instead; `sudo journalctl -t thessley-pam` records every "pass used".)
@@ -193,9 +197,9 @@ prints it in the session step instead; `sudo journalctl -t thessley-pam` records
 
 A script (or an AI agent such as Claude) that connects without a terminal behaves like this:
 
-- **Without a valid pass** the connection is refused. With `BatchMode=yes` it is refused at once ("Permission denied
-  (keyboard-interactive)"); without it, the client has no way to press Enter, so it waits until the request times out
-  (about 2 minutes) and is then refused. Either way, the key alone never gets in.
+- **Without a valid pass** the connection waits for the phone. With `BatchMode=yes` it is refused at once ("Permission denied
+  (keyboard-interactive)"); otherwise the phone can approve it and SSH continues without terminal input. With no phone answer,
+  the request times out and is refused. The key alone never gets in.
 - **With a valid pass** (someone approved from the configured address scope) a client **without** `BatchMode=yes` gets in, with
   no terminal. A client with `BatchMode=yes` is refused even then, because the ssh client does not do
   keyboard-interactive in batch mode. So unattended scripts that must run from a gated address should use
@@ -203,10 +207,9 @@ A script (or an AI agent such as Claude) that connects without a terminal behave
 - A pass belongs to the **configured address scope**, not to the person or the session: after one person approves, any
   process with that user's key can use it during the window. That is the point (key + phone once), and the limit.
 
-Tried with Claude as the client on 2026-10-16: with no pass, Claude's login stopped at "Approve on your phone, then
-press Enter"; the human scanned the QR code and approved, Claude pressed Enter, the session opened and its commands
-ran; a second login inside the window needed no phone (without `BatchMode=yes`); after `end-pass` the same login was
-refused again.
+The shared listener serves all pending approvals on port 47810. A phone response is routed by its random challenge path,
+verified by the corresponding PAM helper, and removed when that approval finishes or times out. The listener does not wait
+for a phone response inside an HTTP request, so one pending login does not hold the port or block other logins.
 
 ## Testing without a second computer
 
@@ -233,7 +236,7 @@ was run on a throwaway user before any real account was added.
 |---|---|
 | The login hangs or shows a `Password:` prompt | The PAM lines are not in `/etc/pam.d/sshd`, or the user is not in the group, or the module is not installed (`install-ssh.sh`) |
 | No QR code, no text | The ssh PAM step is `pam_exec` instead of `pam_thessley_phone.so` (sshd holds plain text back) |
-| "Address already in use" in the log | All approval ports 47810–47819 are taken: ten logins are waiting at once (each waits up to 60 s). One waiting login uses 47810, the next free port is used for the next |
+| "could not start" in the log | Check `systemctl status thessley-pam-approvals` and `journalctl -u thessley-pam-approvals`; the shared listener must be active on port 47810 |
 | `Permission denied (keyboard-interactive)` right after the key | The phone did not answer in time, was denied, or the user has no enrolled phone while `require` is on |
 | The phone is not asked although it should be | A valid pass exists (`thessley-pam passes`), or the connection comes from an exempted address |
 | The phone is asked every time | `grace` is 0 for `sshd`, or each login comes from a different address |
