@@ -46,8 +46,13 @@ def _load_config() -> dict:
         return {}
 
 
+NO_GRACE = ("openvpn",)  # a VPN connection always asks: no pass, whatever the config file says
+
+
 def grace_hours(service: str) -> float:
     """Hours a phone approval stays valid for this PAM service; 0 means every login asks (the default)."""
+    if service in NO_GRACE:
+        return 0.0
     try:
         hours = float(_load_config().get("grace", {}).get(service, 0))
     except (TypeError, ValueError, AttributeError):
@@ -175,6 +180,8 @@ def set_grace(service: str, hours: float) -> None:
     if not service or any(c in service for c in "/ \t\n\0") or service.startswith("."):
         raise ValueError("bad service name")
     hours = min(max(float(hours), 0.0), MAX_HOURS)
+    if service in NO_GRACE and hours > 0:
+        raise ValueError("The VPN always asks for an approval: there is no grace time for it.")
     store.ensure_dirs()
     data = _load_config()
     grace = data.setdefault("grace", {})

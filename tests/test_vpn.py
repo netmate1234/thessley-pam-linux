@@ -163,28 +163,25 @@ class DaemonTest(VpnBase):
         self.addCleanup(conn3.close)
         self.assertNotEqual(read3()["url"], first)
 
-    def test_without_a_grace_time_every_connection_asks_and_with_one_the_same_address_is_let_in(self):
-        conn, f, read = self.ask()
-        self.addCleanup(conn.close)
-        read()
-        self.answer(self.flow_link())
-        self.assertTrue(read()["ok"])
-        self.assertEqual(grants.passes_of(USER), [])               # no grace time for the VPN: no pass was given
-        grants.set_grace("openvpn", 4)
-        conn2, f2, read2 = self.ask()
-        self.addCleanup(conn2.close)
-        self.assertIn("url", read2())                              # still asks: the pass is made by an approval under the new setting
-        self.answer(self.flow_link2(1))
-        self.assertTrue(read2()["ok"])
-        self.assertEqual([(p["service"], p["rhost"]) for p in grants.passes_of(USER)], [("openvpn", "203.0.113.7")])
-        conn3, f3, read3 = self.ask()                              # the same address again
-        self.addCleanup(conn3.close)
-        done = read3()
-        self.assertEqual((done["done"], done["ok"]), (True, True))     # no page, no approval
-        self.assertNotIn("url", done)
-        conn4, f4, read4 = self.ask(rhost="198.51.100.9")          # another address still has to be approved
-        self.addCleanup(conn4.close)
-        self.assertIn("url", read4())
+    def test_every_vpn_connection_asks_there_is_no_grace_time(self):
+        for _ in range(2):                                         # twice from the same address: both are asked
+            conn, f, read = self.ask()
+            self.addCleanup(conn.close)
+            self.assertIn("url", read())
+            self.answer(self.flow_link2(len([x for x in self.approvals.flows.values()]) - 1))
+            self.assertTrue(read()["ok"])
+        self.assertEqual(grants.passes_of(USER), [])               # no pass was given
+        # not even when the config file says otherwise (an old setting, or someone editing it)
+        cfg = grants._config_path()
+        os.makedirs(os.path.dirname(cfg), exist_ok=True)
+        with open(cfg, "w") as handle:
+            json.dump({"grace": {"openvpn": 4, "sshd": 4}}, handle)
+        self.assertEqual(grants.grace_hours("openvpn"), 0)
+        self.assertEqual(grants.grace_hours("sshd"), 4)
+        with self.assertRaises(ValueError):
+            grants.set_grace("openvpn", 4)
+        grants.set_grace("openvpn", 0)                             # taking an old setting away still works
+        self.assertEqual(grants.grace_hours("sshd"), 4)
 
     def test_a_pass_from_an_earlier_approval_needs_no_new_one(self):
         runner_calls = []

@@ -62,7 +62,7 @@ as a sudo or ssh approval.
 If you change `public-host`, enrol again.
 
 On the admin page (`/keys`) the devices enrolled this way have a table of their own, **VPN devices**, apart from the keys for ssh,
-sudo and the screen, with **Add a VPN device** (it needs the public host above) and their own **VPN passes**. A device enrolled
+sudo and the screen, with **Add a VPN device** (it needs the public host above) and no passes (a VPN connection always asks). A device enrolled
 for the VPN before the server remembered it can be moved there with `sudo thessley-pam vpn mark CREDENTIAL_ID [USER]`
 (`vpn unmark` puts it back); `thessley-pam list` shows `[VPN host]` on them.
 
@@ -85,8 +85,9 @@ for the VPN before the server remembered it can be moved there with `sudo thessl
     # the second factor
     script-security 2
     auth-user-pass-verify /usr/local/lib/thessley-pam/vpn-auth via-env
-    auth-gen-token 14400                    # no new approval for renegotiation while the connection lives (4 h)
-    reneg-sec 3600
+    # no grace time: no auth-gen-token (a client that reconnects must be approved again), and no re-key that would ask again
+    reneg-sec 0
+    push "reneg-sec 0"
 
     user nobody
     group nogroup                           # must be the group set with: thessley-pam vpn group GROUP
@@ -137,6 +138,6 @@ that has a valid certificate **and** an approved device, so keep ssh and the oth
 The tests cover the daemon, the script (exit codes, the files it writes) and the page. They do not start a real OpenVPN: the
 first real connection is the check that your OpenVPN version and client honour the pending authentication.
 
-- Each approval is for one connection. Set `sudo thessley-pam grace --service openvpn --hours 4` and the same account from the
-  same address needs no new approval for 4 h.
+- Each approval is for one connection. There is no grace time and no pass for the VPN (unlike ssh): every connection, and every
+  reconnect after the server dropped it, asks the device again. `thessley-pam grace --service openvpn` refuses to set one.
 - The apps show it as "Approve VPN login".

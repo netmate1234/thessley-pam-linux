@@ -482,22 +482,20 @@ class WebTest(WebBase):
         status = self.wait_for(self.b, flow.id, lambda s: s.get("link"))
         self.assertNotIn("vh=", status["link"])
 
-    def test_vpn_passes_have_their_own_list_and_their_own_end_all(self):
+    def test_the_vpn_has_no_passes_and_no_grace_setting(self):
         self.vpn_device()
-        self.pass_for(USER)                                   # an ssh pass
-        self.pass_for(USER, "openvpn", "203.0.113.7")         # a VPN pass
+        self.pass_for(USER)                                   # an ssh pass is listed
+        self.pass_for(USER, "openvpn", "203.0.113.7")         # an old VPN pass (from before) is never listed or offered
+        self.admin = True
         self.login()
         _, body = self.b.get("/keys")
-        before, vpn_part = body.split("<h3>VPN passes</h3>")
-        self.assertIn("ssh login", before)
-        self.assertNotIn("VPN login", before)
-        self.assertIn("VPN login", vpn_part)
-        self.assertIn("203.0.113.7", vpn_part)
-        self.b.post("/passes/end", {"csrf": self.csrf(), "user": USER, "all": "1", "scope": "vpn"})
-        self.assertEqual([p["service"] for p in grants.passes_of(USER)], ["sshd"])      # the ssh pass stays
-        self.pass_for(USER, "openvpn", "203.0.113.7")
-        self.b.post("/passes/end", {"csrf": self.csrf(), "user": USER, "all": "1", "scope": "other"})
-        self.assertEqual([p["service"] for p in grants.passes_of(USER)], ["openvpn"])   # the VPN pass stays
+        self.assertIn("ssh login", body)
+        self.assertNotIn("VPN login", body)
+        self.assertNotIn("VPN passes", body)
+        self.assertIn("no passes and no grace time for the VPN", body)
+        self.assertNotIn("counts for the VPN", self.b.get("/admin")[1])
+        self.b.post("/admin/set", {"csrf": self.csrf(), "name": "grace_vpn", "value": "3"})
+        self.assertEqual(grants.grace_hours("openvpn"), 0)
 
     def test_set_vpn_host_marks_and_unmarks_a_device(self):
         d = store.devices(USER)[0]
@@ -525,11 +523,7 @@ class WebTest(WebBase):
         self.assertTrue(grants.requires_phone("sshd"))
         self.step_up("/admin/set", {"name": "grace", "value": "2"})
         self.assertEqual(grants.grace_hours("sshd"), 2)
-        self.assertEqual(grants.grace_hours("openvpn"), 0)                          # the VPN has its own, off until set
-        self.assertIn("How long one approval counts for the VPN", self.b.get("/admin")[1])
-        self.step_up("/admin/set", {"name": "grace_vpn", "value": "3"})
-        self.assertEqual(grants.grace_hours("openvpn"), 3)
-        self.assertEqual(grants.grace_hours("sshd"), 2)                             # and does not touch the ssh one
+        self.assertEqual(grants.grace_hours("openvpn"), 0)                          # the VPN has none, ever
         self.step_up("/admin/set", {"name": "self_enroll", "value": "off"})
         self.assertFalse(grants.self_enroll_allowed())
         self.step_up("/admin/set", {"name": "show_link", "value": "off"})

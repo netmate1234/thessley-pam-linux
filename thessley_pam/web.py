@@ -345,9 +345,6 @@ class WebApp:
             if name == "grace":
                 grants.set_grace("sshd", float(value))
                 return "/admin", f"A phone approval now lasts {float(value):g} h for ssh (0 = every login asks)."
-            if name == "grace_vpn":
-                grants.set_grace("openvpn", float(value))
-                return "/admin", f"A device approval now lasts {float(value):g} h for the VPN (0 = every connection asks)."
             if name == "require":
                 grants.set_require("sshd", value == "on")
                 return "/admin", "Device required for ssh: " + ("on." if value == "on" else "off.")
@@ -743,7 +740,8 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
     note = ('<p class="dim">Changes ask your device for a fresh approval first, so nobody who only has this browser can change them.</p>')
     vpn_host = grants.vpn_settings()["public_host"]
     vpn_note = ("<p class='dim'>Devices enrolled for the VPN: they approve a VPN login (after the client certificate) from the host "
-                "named on the card. Add one here, or on the computer with <span class='mono'>sudo thessley-pam vpn enroll</span>.</p>"
+                "named on the card. Every VPN connection asks for a fresh approval: there are no passes and no grace time for the VPN. "
+                "Add a device here, or on the computer with <span class='mono'>sudo thessley-pam vpn enroll</span>.</p>"
                 if vpn_host else
                 "<p class='dim'>No VPN public host is set, so a VPN device cannot be added here: "
                 "<span class='mono'>sudo thessley-pam vpn public-host NAME</span>.</p>")
@@ -752,18 +750,17 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
             + add_form("add", "Add a device") + passes_html(user, viewer, devices)
             + "<h2>VPN devices</h2>" + vpn_note
             + key_cards(user, viewer, vpn_devices, details, "No device is enrolled for the VPN.")
-            + (add_form("addvpn", "Add a VPN device") if vpn_host else "")
-            + passes_html(user, viewer, devices, vpn=True))
+            + (add_form("addvpn", "Add a VPN device") if vpn_host else ""))
 
 
 PASS_NAMES = {"sshd": "ssh login", "sudo": "sudo", "gdm-thessley": "screen login", "gdm-password": "screen login", "openvpn": "VPN login"}
 
 
-def passes_html(user: str, viewer: Session, devices: list[dict], vpn: bool = False) -> str:
+def passes_html(user: str, viewer: Session, devices: list[dict]) -> str:
     """The approvals that let this account in without asking its device again (the 4 h passes), each with a button that ends it.
     Ending a pass only takes access away, so it needs no fresh approval; the next login asks the device again."""
     labels = {d["credential_id"]: d.get("label", "") for d in devices}
-    items = [p for p in grants.passes_of(user) if (p.get("service") == "openvpn") == vpn]
+    items = [p for p in grants.passes_of(user) if p.get("service") not in grants.NO_GRACE]   # the VPN never has one
     hidden = f'<input type="hidden" name="csrf" value="{esc(viewer.csrf)}"><input type="hidden" name="user" value="{esc(user)}">'
     rows = []
     for p in items:
@@ -779,11 +776,7 @@ def passes_html(user: str, viewer: Session, devices: list[dict], vpn: bool = Fal
         body = '<div class="card dim">No pass is active: every login asks your device.</div>'
     else:
         body = "".join(rows) + (f'<form method="post" action="/passes/end" class="row">{hidden}'
-                                f'<input type="hidden" name="all" value="1"><input type="hidden" name="scope" value="{"vpn" if vpn else "other"}">'
-                                f'<button class="danger">End all {"VPN " if vpn else ""}passes</button></form>')
-    if vpn:
-        return ("<h3>VPN passes</h3><p class='dim'>After one approval, the same account from the same address can connect to the VPN "
-                "again without asking your device, if you set a grace time for it. End a pass to make the next connection ask again.</p>" + body)
+                                '<input type="hidden" name="all" value="1"><button class="danger">End all passes</button></form>')
     return ("<h2>Passes</h2><p class='dim'>After one approval, the same account from the same address is let in without asking "
             "your device again, for a few hours. End a pass to make the next login ask again.</p>" + body)
 
@@ -816,12 +809,6 @@ def admin_page(viewer: Session, flash: str) -> str:
              f'<div class="dim">After one approval, logins from the same address need no new one for this long. 0 means every login asks.</div>'
              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace">'
              f'<input type="text" name="value" value="{sshd_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
-    vpn_grace = grants.grace_hours("openvpn")
-    grace += (f'<div class="card"><strong>How long one approval counts for the VPN</strong>: {vpn_grace:g} h'
-              f'<div class="dim">After one approval, a VPN connection from the same address needs no new one for this long. '
-              f'0 means every connection asks. A phone on mobile data often gets a new address, which needs a new approval anyway.</div>'
-              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace_vpn">'
-              f'<input type="text" name="value" value="{vpn_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
             + grace
@@ -1076,11 +1063,7 @@ def make_handler(app: WebApp):
             if target is None:
                 return self.html(403, "Not allowed", flash_html("You can only end your own passes."), s)
             if data.get("all"):
-                # the "all" button of one table ends that table's passes only: VPN passes apart from ssh, sudo and screen ones
-                vpn_scope = data.get("scope") == "vpn"
-                ended = sum(grants.revoke_one(target, p["service"], p["rhost"]) for p in grants.passes_of(target)
-                            if (p.get("service") == "openvpn") == vpn_scope) if data.get("scope") in ("vpn", "other") \
-                    else grants.revoke(username=target)
+                ended = grants.revoke(username=target)
             else:
                 service, rhost = str(data.get("service", "")), str(data.get("rhost", ""))
                 if not service or not rhost or len(service) > 64 or len(rhost) > 64:
@@ -1093,7 +1076,7 @@ def make_handler(app: WebApp):
 
         def admin_action(self, data: dict, s: Session) -> None:
             name, value = data.get("name", ""), (data.get("value") or "").strip()
-            if name in ("grace", "grace_vpn"):
+            if name == "grace":
                 try:
                     hours = float(value)
                 except ValueError:
