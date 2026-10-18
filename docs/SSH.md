@@ -1,14 +1,15 @@
 # ssh: key + phone once, then the key alone for N hours
 
 For members of one group, `ssh` needs the ssh key **and** a phone approval. After an approval, the same user logging
-in from the same address needs only the key for the next N hours (4 by default in these notes).
+in from the same address needs only the key for the next N hours (4 by default in these notes). On cloud hosts whose
+SSH clients may come from changing addresses, configure the pass to apply from any client IP.
 
 ## What a "pass" is
 
 A pass is one entry in `/run/thessley-pam/grants/<user>.json` (root only, on tmpfs, so a reboot ends every pass):
 
 - the PAM **service** (`sshd`): a pass for ssh never works for sudo or the login screen;
-- the client's **address** (`PAM_RHOST`): a login from another address asks the phone again;
+- the client's **address** (`PAM_RHOST`), unless the host is configured to let SSH passes apply from any address;
 - the **phone** that approved: if it is removed or switched off, its passes end, and switching it back on does not
   bring them back;
 - a **fixed end time**: using a pass does not extend it.
@@ -16,8 +17,9 @@ A pass is one entry in `/run/thessley-pam/grants/<user>.json` (root only, on tmp
 ### What it does not protect against
 
 sshd does not tell PAM which ssh key was used, so a pass cannot be tied to the key. Someone who holds a valid key for
-that user and connects from the same address during the window gets in without the phone. Behind a shared (NAT)
-address that can be more than one machine. Keep the window short, and use `end-pass` when in doubt.
+that user and connects during the window gets in without the phone. In same-IP mode this is limited to that address;
+`any` mode allows it from every address. Behind a shared (NAT) address, even same-IP mode can cover more than one
+machine. Keep the window short, and use `end-pass` when in doubt.
 
 ## Why there is a small PAM module for ssh
 
@@ -36,7 +38,8 @@ named, so there is no separate PAM service for a test instance: use `Match` bloc
     sudo groupadd thessley-ssh                             # who is affected
     sudo usermod -aG thessley-ssh USER
     sudo thessley-pam enroll --user USER                   # their phone (QR code, scan, type yes)
-    sudo thessley-pam grace --service sshd --hours 4       # the pass length
+    sudo thessley-pam grace --service sshd --hours 4       # the pass length, same client IP by default
+    sudo thessley-pam grace --service sshd --hours 4 --ip-scope any  # optional cloud-host mode
     sudo thessley-pam require --service sshd on            # members with no phone are refused (fail closed)
 
 `/etc/ssh/sshd_config`, at the end of the file (a `Match` block must be last):
@@ -62,6 +65,10 @@ authentication failures". Plain PAM text would not do: sshd drops it when a logi
 
 Everyone not in the group keeps the old rules: the two PAM lines are skipped for them, and password and
 keyboard-interactive logins stay switched off by `sshd_config` as before.
+
+Use `--ip-scope any` only on hosts where SSH clients can arrive from changing addresses. A pass then applies to that
+user and service from every source IP until it expires; it still requires an enrolled phone approval and does not apply
+to other PAM services. Switch back with `--ip-scope same`. The setting is stored on this computer.
 
 Then, **always** in this order:
 
@@ -177,8 +184,8 @@ It shows the same QR code and 6-digit code, and the user types `yes`. How it sta
     sudo thessley-pam grace                   show the setting; --service sshd --hours 0 makes every login ask
 
 Logging in: the key is checked first (a wrong key never reaches the phone), then the QR code appears; scan it with
-the app, approve with your fingerprint, press Enter. The next logins from that address within the window go straight
-in. A shell login shows "approved earlier, valid for another ..." once; `ssh host command` shows nothing. (sshd shows
+the app, approve with your fingerprint, press Enter. In same-IP mode, the next logins from that address within the
+window go straight in; with `--ip-scope any`, they can come from any address. A shell login shows "approved earlier, valid for another ..." once; `ssh host command` shows nothing. (sshd shows
 PAM text from the auth step again when it opens a shell, so the module leaves the note in `/run/thessley-pam/notes` and
 prints it in the session step instead; `sudo journalctl -t thessley-pam` records every "pass used".)
 
@@ -189,12 +196,12 @@ A script (or an AI agent such as Claude) that connects without a terminal behave
 - **Without a valid pass** the connection is refused. With `BatchMode=yes` it is refused at once ("Permission denied
   (keyboard-interactive)"); without it, the client has no way to press Enter, so it waits until the request times out
   (about 2 minutes) and is then refused. Either way, the key alone never gets in.
-- **With a valid pass** (someone approved from the same address) a client **without** `BatchMode=yes` gets in, with
+- **With a valid pass** (someone approved from the configured address scope) a client **without** `BatchMode=yes` gets in, with
   no terminal. A client with `BatchMode=yes` is refused even then, because the ssh client does not do
   keyboard-interactive in batch mode. So unattended scripts that must run from a gated address should use
   `-o BatchMode=no` (and `-o ConnectTimeout=...`), or run from an exempted address (key only).
-- A pass belongs to the **address**, not to the person or the session: after one person approves, any process on that
-  machine can use the key for the rest of the window. That is the point (key + phone once), and the limit.
+- A pass belongs to the **configured address scope**, not to the person or the session: after one person approves, any
+  process with that user's key can use it during the window. That is the point (key + phone once), and the limit.
 
 Tried with Claude as the client on 2026-10-16: with no pass, Claude's login stopped at "Approve on your phone, then
 press Enter"; the human scanned the QR code and approved, Claude pressed Enter, the session opened and its commands

@@ -95,13 +95,13 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
     if req_type not in ("sudo", "login", "vpn"):
         return REFUSED
 
-    # A pass from an earlier approval (grace hours switched on for this service with `thessley-pam grace`): the
-    # same user, service and client address need no new approval until it runs out. Never for the login screen.
+    # A configured pass needs no new approval until it runs out. Never for the login screen.
     rhost = env.get("PAM_RHOST", "") or grants.LOCAL
     grace = 0.0 if login else grants.grace_hours(service)
+    pass_rhost = "*" if grants.grace_any_ip(service) else rhost
     if grace > 0:
         try:
-            held = grants.valid(username, service, rhost, {d["credential_id"] for d in devices})
+            held = grants.valid(username, service, pass_rhost, {d["credential_id"] for d in devices})
         except OSError:
             held = None
         if held:
@@ -175,7 +175,8 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
                     say(line)
             if grace > 0 and not login:
                 # sshd drops text printed after its last question, so say this before the phone is answered.
-                say(f"After you approve, your next login from {rhost} needs no device for {grace:g} h.")
+                pass_scope = "any client IP" if grants.grace_any_ip(service) else rhost
+                say(f"After you approve, your next login from {pass_scope} needs no device for {grace:g} h.")
             if marker:
                 # pam_thessley_phone.so (for sshd, which holds back plain text until PAM asks a question) reads
                 # everything up to this line, shows it together with a prompt, and then waits for the exit code.
@@ -203,9 +204,10 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
         pass  # last_used is informational; never fail a valid approval over it
     if grace > 0:
         try:
-            grants.add(username, service, rhost, grace, outcome["cred"])
-            say(f"Thessley Passkey: approved. Your next login from {rhost} needs no device for {grace:g} h.")
-            _log(f"pass granted to {username} ({service}, from {rhost}, {grace:g} h)")
+            grants.add(username, service, pass_rhost, grace, outcome["cred"])
+            pass_scope = "any client IP" if grants.grace_any_ip(service) else rhost
+            say(f"Thessley Passkey: approved. Your next login from {pass_scope} needs no device for {grace:g} h.")
+            _log(f"pass granted to {username} ({service}, from {pass_scope}, {grace:g} h)")
         except OSError as e:
             _log(f"could not record the pass for {username}: {e}", warn=True)  # the login itself is still approved
     _log(f"approved by {outcome['label']!r} ({outcome['cred']}) from {outcome['ip']} for {username} "

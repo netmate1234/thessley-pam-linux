@@ -530,18 +530,20 @@ def cmd_grace(args) -> int:
         if not cfg:
             print("Every login asks the device (no grace time is set for any service).")
         for svc, hours in sorted(cfg.items()):
-            print(f"{svc}: the device is asked once per {hours:g} h")
+            scope = "any client IP" if grants.grace_any_ip(svc) else "the same client IP"
+            print(f"{svc}: the device is asked once per {hours:g} h; pass applies from {scope}")
         return 0
     if args.hours is None:
         sys.exit("Say how long: --hours 4 (or --hours 0 to ask every time).")
     try:
-        grants.set_grace(args.service, args.hours)
+        grants.set_grace(args.service, args.hours, args.ip_scope)
     except ValueError as exc:
         sys.exit(str(exc))
     hours = grants.grace_hours(args.service)
     if hours > 0:
-        print(f"{args.service}: after one approval the same user from the same address needs no device for {hours:g} h.\n"
-              "(The pass is tied to the user, the service and the client's address, not to the ssh key.)")
+        scope = "any client IP" if grants.grace_any_ip(args.service) else "the same client IP"
+        print(f"{args.service}: after one approval the same user needs no device for {hours:g} h from {scope}.\n"
+              "(The pass is tied to the user and service, not to the ssh key.)")
     else:
         ended = grants.revoke(service=args.service)
         print(f"{args.service}: every login asks the device again." + (f" Ended {ended} pass(es)." if ended else ""))
@@ -643,6 +645,7 @@ def main(argv=None) -> int:
     g = sub.add_parser("grace", help="ask the device once per N hours for a PAM service (e.g. sshd)")
     g.add_argument("--service")
     g.add_argument("--hours", type=float)
+    g.add_argument("--ip-scope", choices=("same", "any"), help="limit the pass to its original client IP, or allow any IP")
     g.set_defaults(func=cmd_grace)
     rq = sub.add_parser("require", help="refuse logins by users with no enrolled device for a PAM service")
     rq.add_argument("--service")

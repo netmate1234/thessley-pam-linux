@@ -345,6 +345,10 @@ class WebApp:
             if name == "grace":
                 grants.set_grace("sshd", float(value))
                 return "/admin", f"A phone approval now lasts {float(value):g} h for ssh (0 = every login asks)."
+            if name == "ssh_any_ip":
+                scope = "any" if value == "on" else "same"
+                grants.set_grace("sshd", grants.grace_hours("sshd"), scope)
+                return "/admin", "SSH passes now apply from " + ("any client IP." if scope == "any" else "the approved client IP only.")
             if name == "session":
                 grants.set_web(session_minutes=int(float(value)))
                 return "/admin", f"You are now signed out after {int(float(value))} minutes without activity (from the next sign-in)."
@@ -614,9 +618,18 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}bu
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}.row form{display:inline}
 .flash{border-left:4px solid var(--ok);padding:8px 12px;margin:10px 0;background:var(--card)}
 code,.mono{font-family:ui-monospace,monospace;word-break:break-all;font-size:.85rem}
-.qr{display:block;margin:12px auto;background:#fff;padding:6px;border-radius:8px;width:min(92vw,520px);height:auto}
+.qr{display:block;margin:12px auto;background:#fff;padding:6px;border-radius:8px;width:min(100%,520px);max-width:100%;height:auto}
 table{width:100%;border-collapse:collapse}td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top;font-size:.92rem}
 .table-wrap{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+.key-details{margin-top:8px;border-top:1px solid var(--line);min-width:0}
+.key-details summary{display:flex;align-items:center;justify-content:space-between;min-height:44px;cursor:pointer;list-style:none}
+.key-details summary::-webkit-details-marker{display:none}
+.key-details summary::after{content:"+";font-size:1.2rem;line-height:1}
+.key-details[open] summary::after{content:"−"}
+.key-detail-list{margin:0;min-width:0}
+.key-detail-row{display:grid;grid-template-columns:minmax(8rem,30%) minmax(0,1fr);gap:8px;padding:8px 0;border-top:1px solid var(--line);min-width:0}
+.key-detail-row dt{color:var(--dim);font-size:.85rem;overflow-wrap:anywhere}
+.key-detail-row dd{margin:0;min-width:0;overflow-wrap:anywhere;word-break:break-word}
 .pagination{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:12px 0}
 .pagination .page-status{color:var(--dim);font-size:.9rem;text-align:center;flex:1 1 auto}
 .pagination>a{margin-right:0}
@@ -806,8 +819,8 @@ def passes_html(user: str, viewer: Session, devices: list[dict]) -> str:
 def key_details_html(rows: list[tuple[str, str]]) -> str:
     if not rows:
         return ""
-    body = "".join(f"<tr><td class='dim' style='white-space:nowrap'>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in rows)
-    return f"<details style='margin-top:8px'><summary class='link' style='cursor:pointer'>Details</summary><table>{body}</table></details>"
+    body = "".join(f"<div class='key-detail-row'><dt>{esc(k)}</dt><dd>{esc(v)}</dd></div>" for k, v in rows)
+    return f"<details class='key-details'><summary class='link'>Details</summary><dl class='key-detail-list'>{body}</dl></details>"
 
 
 def log_page(rows: list[tuple[str, str]], who: str, page_number: int = 1, everyone: bool = False) -> str:
@@ -852,8 +865,9 @@ def admin_page(viewer: Session, flash: str) -> str:
                 f'<input type="hidden" name="name" value="{esc(name)}">'
                 f'<button name="value" value="{"off" if state else "on"}">Switch {"off" if state else "on"}</button></form></div>')
 
+    ssh_any_ip = grants.grace_any_ip("sshd")
     grace = (f'<div class="card"><strong>How long one approval counts for ssh</strong>: {sshd_grace:g} h'
-             f'<div class="dim">After one approval, logins from the same address need no new one for this long. 0 means every login asks.</div>'
+             f'<div class="dim">After one approval, logins from the configured IP scope need no new one for this long. 0 means every login asks.</div>'
              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace">'
              f'<input type="text" name="value" value="{sshd_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
     session = grants.web_settings()["session_minutes"]
@@ -865,6 +879,8 @@ def admin_page(viewer: Session, flash: str) -> str:
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
             + grace
+            + toggle("ssh_any_ip", "SSH passes from any client IP", ssh_any_ip,
+                     "Cloud hosts can allow an approved SSH pass from changing client IPs. The pass still expires normally.")
             + toggle("require", "Device required for ssh", grants.requires_phone("sshd"),
                      "Accounts in the ssh group with no enrolled device are refused instead of let through.")
             + toggle("self_enroll", "Users may add their own device", grants.self_enroll_allowed(),
@@ -1146,7 +1162,7 @@ def make_handler(app: WebApp):
                     minutes = -1
                 if not 1 <= minutes <= 240:
                     return self.html(400, "Not valid", flash_html("Give a number of minutes from 1 to 240."), s)
-            elif name in ("require", "self_enroll", "show_link"):
+            elif name in ("require", "self_enroll", "show_link", "ssh_any_ip"):
                 if value not in ("on", "off"):
                     return self.html(400, "Not valid", flash_html("Choose on or off."), s)
             else:

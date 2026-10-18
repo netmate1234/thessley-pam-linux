@@ -40,7 +40,8 @@ address: `sudo thessley-pam web listen auto`. Every page says which computer it 
 - **Fresh approval for every change.** Renaming, switching off or on, removing, adding, and every admin setting first ask your
   phone ("Approve a change to your keys", or "Approve adding a device"). A stolen browser session can look but not change.
 - **Administrators** (members of `sudo`, `admin` or `wheel`, and root) can pick any account and change the settings: how
-  long one approval counts for ssh, phone required for ssh, users adding their own phone, text links in approvals. Their own
+  long one approval counts for ssh, whether SSH passes work from any client IP, phone required for ssh, users adding their own
+  phone, text links in approvals. Their own
   phone approves each change.
 - **VPN devices.** A second table for the devices enrolled for the OpenVPN second step (`thessley-pam vpn enroll`, see VPN.md):
   the same rename, switch off and remove, and **Add a VPN device**. They are not mixed with the keys for ssh, sudo and the screen.

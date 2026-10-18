@@ -49,6 +49,14 @@ def _load_config() -> dict:
 NO_GRACE = ("openvpn",)  # a VPN connection always asks: no pass, whatever the config file says
 
 
+def grace_any_ip(service: str) -> bool:
+    """Whether this service's grace pass applies regardless of the SSH client's address."""
+    try:
+        return service not in NO_GRACE and service in _load_config().get("grace_any_ip", [])
+    except (TypeError, AttributeError):
+        return False
+
+
 def grace_hours(service: str) -> float:
     """Hours a phone approval stays valid for this PAM service; 0 means every login asks (the default)."""
     if service in NO_GRACE:
@@ -172,12 +180,14 @@ def set_require(service: str, on: bool) -> None:
     _atomic_write(_config_path(), data, store.BASE)
 
 
-def set_grace(service: str, hours: float) -> None:
+def set_grace(service: str, hours: float, ip_scope: str | None = None) -> None:
     if not service or any(c in service for c in "/ \t\n\0") or service.startswith("."):
         raise ValueError("bad service name")
     hours = min(max(float(hours), 0.0), MAX_HOURS)
     if service in NO_GRACE and hours > 0:
         raise ValueError("The VPN always asks for an approval: there is no grace time for it.")
+    if ip_scope not in (None, "same", "any"):
+        raise ValueError("IP scope must be 'same' or 'any'.")
     store.ensure_dirs()
     data = _load_config()
     grace = data.setdefault("grace", {})
@@ -185,6 +195,16 @@ def set_grace(service: str, hours: float) -> None:
         grace[service] = hours
     else:
         grace.pop(service, None)
+    if ip_scope is not None:
+        any_ip = set(data.get("grace_any_ip", []))
+        if ip_scope == "any":
+            any_ip.add(service)
+        else:
+            any_ip.discard(service)
+        if any_ip:
+            data["grace_any_ip"] = sorted(any_ip)
+        else:
+            data.pop("grace_any_ip", None)
     _atomic_write(_config_path(), data, store.BASE)
 
 
