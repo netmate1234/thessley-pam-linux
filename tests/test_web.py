@@ -524,10 +524,20 @@ class WebTest(WebBase):
         self.step_up("/admin/set", {"name": "grace", "value": "2"})
         self.assertEqual(grants.grace_hours("sshd"), 2)
         self.assertEqual(grants.grace_hours("openvpn"), 0)                          # the VPN has none, ever
+        self.assertIn("Stay signed in to this page", self.b.get("/admin")[1])
+        self.step_up("/admin/set", {"name": "session", "value": "120"})
+        self.assertEqual(grants.web_settings()["session_minutes"], 120)
         self.step_up("/admin/set", {"name": "self_enroll", "value": "off"})
         self.assertFalse(grants.self_enroll_allowed())
         self.step_up("/admin/set", {"name": "show_link", "value": "off"})
         self.assertFalse(store.show_link())
+
+    def test_the_session_length_is_validated(self):
+        self.admin = True
+        self.login()
+        for bad in ("0", "241", "abc", "-5", ""):
+            self.assertEqual(self.b.post("/admin/set", {"csrf": self.csrf(), "name": "session", "value": bad})[0].status, 400, bad)
+        self.assertEqual(grants.web_settings()["session_minutes"], 15)
 
     def test_admin_settings_are_validated(self):
         self.admin = True

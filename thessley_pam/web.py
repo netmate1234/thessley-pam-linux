@@ -345,6 +345,9 @@ class WebApp:
             if name == "grace":
                 grants.set_grace("sshd", float(value))
                 return "/admin", f"A phone approval now lasts {float(value):g} h for ssh (0 = every login asks)."
+            if name == "session":
+                grants.set_web(session_minutes=int(float(value)))
+                return "/admin", f"You are now signed out after {int(float(value))} minutes without activity (from the next sign-in)."
             if name == "require":
                 grants.set_require("sshd", value == "on")
                 return "/admin", "Device required for ssh: " + ("on." if value == "on" else "off.")
@@ -809,6 +812,12 @@ def admin_page(viewer: Session, flash: str) -> str:
              f'<div class="dim">After one approval, logins from the same address need no new one for this long. 0 means every login asks.</div>'
              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace">'
              f'<input type="text" name="value" value="{sshd_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
+    session = grants.web_settings()["session_minutes"]
+    grace += (f'<div class="card"><strong>Stay signed in to this page</strong>: {session} minutes without activity'
+              f'<div class="dim">After this long without clicking anything you are signed out (always after 8 hours). '
+              f'Applies from the next sign-in. 1 to 240 minutes.</div>'
+              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="session">'
+              f'<input type="text" name="value" value="{session}" style="width:6rem"> minutes <button>Change</button></form></div>')
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
             + grace
@@ -1083,6 +1092,13 @@ def make_handler(app: WebApp):
                     hours = -1
                 if not 0 <= hours <= grants.MAX_HOURS:
                     return self.html(400, "Not valid", flash_html(f"Give a number of hours from 0 to {grants.MAX_HOURS:g}."), s)
+            elif name == "session":
+                try:
+                    minutes = float(value)
+                except ValueError:
+                    minutes = -1
+                if not 1 <= minutes <= 240:
+                    return self.html(400, "Not valid", flash_html("Give a number of minutes from 1 to 240."), s)
             elif name in ("require", "self_enroll", "show_link"):
                 if value not in ("on", "off"):
                     return self.html(400, "Not valid", flash_html("Choose on or off."), s)
