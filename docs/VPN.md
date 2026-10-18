@@ -111,6 +111,20 @@ Make the certificates with easy-rsa (or any CA). One client certificate per devi
 In **OpenVPN Connect** (3.x) the page opens in the browser by itself. With the command-line client or NetworkManager the
 pending-authentication message is shown in the log or not at all; open the address from the log yourself.
 
+## Reaching the home network through the VPN
+
+A VPN client reaches this computer (`10.8.0.1`) at once. The other machines on your network do not know the VPN range, so their
+replies would go to the router and never come back. `install-vpn-nat.sh` fixes that with a systemd unit
+(`thessley-pam-vpn-nat`) that sets three firewall rules at boot:
+
+- NAT for the VPN range out of the LAN interface, so the machines on the LAN see the connection as coming from this computer;
+- forwarding VPN -> LAN, and LAN -> VPN only for replies to those connections.
+
+Nothing else is opened: not Docker's networks, not other interfaces. Docker sets the forwarding policy to DROP, so the rules go
+into its `DOCKER-USER` chain when there is one. `sudo ./install-vpn-nat.sh --dry-run` shows the rules first;
+`VPN_SUBNET=...` sets another range; `sudo ./uninstall-vpn-nat.sh` removes everything. This opens your home network to a client
+that has a valid certificate **and** an approved device, so keep ssh and the other services on it protected as they are now.
+
 ## Tests and limits
 
     python3 -I tests/test_vpn.py
