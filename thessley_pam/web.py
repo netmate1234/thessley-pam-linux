@@ -641,6 +641,9 @@ table{width:100%;border-collapse:collapse}td{padding:6px 4px;border-bottom:1px s
  .pagination{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin:10px 0}
  .pagination .page-status{grid-column:1 / -1;grid-row:1;white-space:normal}
  .pagination>a{min-height:44px;justify-content:center;padding:8px 10px}
+ .key-detail-row{grid-template-columns:minmax(0,1fr);gap:2px;padding:10px 0}
+ .key-detail-row dt{font-size:.78rem;line-height:1.25}
+ .key-detail-row dd{font-size:.92rem;line-height:1.35}
  .activity-time-cell{width:5rem;min-width:5rem;white-space:normal;padding-right:6px}
  .activity-time{display:block;white-space:normal;line-height:1.3}
  .activity-time-date,.activity-time-clock{display:block;font-size:.72rem;white-space:nowrap}
