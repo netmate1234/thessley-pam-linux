@@ -56,8 +56,27 @@ def _target_user(arg: str | None) -> str:
     return name
 
 
+def qr_style(modules: int, cols: int, rows: int, remote: bool) -> str:
+    """How `thessley-pam enroll` draws its QR code in a terminal. "big" = two characters per module (twice the size in both
+    directions: a module is then about square), when the window is large enough for it; otherwise the compact half-block form.
+    Never big over ssh: that is a login prompt in someone else's window, where size is limited (and the ssh logins keep the compact
+    form in pam.py anyway)."""
+    if remote:
+        return "compact"
+    return "big" if cols >= 2 * modules + 2 and rows >= modules + 6 else "compact"
+
+
 def _show_qr(link: str) -> None:
-    subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "2", link], check=True)
+    import shutil
+    remote = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY") or os.environ.get("SSH_CLIENT"))
+    size = shutil.get_terminal_size((80, 24))
+    try:   # the number of modules, from the compact form (one row = two modules)
+        rows_compact = subprocess.run(["qrencode", "-t", "UTF8", "-m", "2", link], check=True, capture_output=True, text=True).stdout.splitlines()
+        modules = len(rows_compact) * 2
+    except (OSError, subprocess.CalledProcessError):
+        modules = 10 ** 6
+    style = qr_style(modules, size.columns, size.lines, remote)
+    subprocess.run(["qrencode", "-t", "ANSI" if style == "big" else "ANSIUTF8", "-m", "2", link], check=True)
 
 
 def _open_tty():

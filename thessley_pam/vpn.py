@@ -224,8 +224,8 @@ def make_socket_server(approvals: Approvals, path: str = SOCKET, group: str = ""
 # ---- the public QR page --------------------------------------------------------------------------------------------
 
 PAGE_CSS = ("body{font-family:system-ui,sans-serif;margin:0;padding:24px 16px;background:#f6f7f9;color:#14181f}"
-            "main{max-width:34rem;margin:0 auto}h1{font-size:1.2rem}.card{background:#fff;border-radius:12px;padding:20px;"
-            "box-shadow:0 1px 3px #0002}.qr{width:100%;max-width:24rem;display:block;margin:12px auto;background:#fff;padding:12px;border-radius:8px;box-sizing:border-box}"
+            "main{max-width:42rem;margin:0 auto}h1{font-size:1.2rem}.card{background:#fff;border-radius:12px;padding:20px;"
+            "box-shadow:0 1px 3px #0002}.qr{width:100%;max-width:36rem;display:block;margin:12px auto;background:#fff;padding:12px;border-radius:8px;box-sizing:border-box}"
             ".mono{font-family:ui-monospace,monospace;font-size:.75rem;word-break:break-all}.dim{color:#5a6472}"
             ".btn{display:inline-block;padding:10px 16px;border-radius:8px;background:#1b5fd6;color:#fff;text-decoration:none}"
             ".ok{color:#0a7a3b}.bad{color:#b3261e}"

@@ -266,5 +266,18 @@ class SelfEnrollTest(EnrollTest):
             t.join(10)
 
 
+class QrStyleTest(unittest.TestCase):
+    """`thessley-pam enroll` draws its QR code twice as big when the terminal is large enough, never over ssh."""
+
+    def test_big_only_when_it_fits_and_not_remote(self):
+        from thessley_pam import cli
+        self.assertEqual(cli.qr_style(61, 200, 80, False), "big")
+        self.assertEqual(cli.qr_style(65, 132, 72, False), "big")           # exactly 2 columns per module plus a margin
+        self.assertEqual(cli.qr_style(61, 120, 80, False), "compact")       # too narrow
+        self.assertEqual(cli.qr_style(61, 200, 60, False), "compact")       # too short
+        self.assertEqual(cli.qr_style(61, 200, 80, True), "compact")        # over ssh: unchanged
+        self.assertEqual(cli.qr_style(10 ** 6, 400, 400, False), "compact")  # the size could not be told
+
+
 if __name__ == "__main__":
     unittest.main()

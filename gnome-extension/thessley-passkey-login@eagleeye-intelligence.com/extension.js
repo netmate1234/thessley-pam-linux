@@ -30,9 +30,10 @@ const MIN_RESTART_SPACING_MS = 5000;
 // The link in the code is ~220 characters, which makes a 53 x 53 module QR code: at 180 px that is 3 px per
 // module, too small for a phone to read from a chair. Aim for 6 px or more, scaled to the screen: about 36% of
 // the screen height, never under 280 px (small laptop screens) or over 480 px.
+// Made bigger on request: about half the screen height, never under 360 px or over 640 px (8 px per module on a 1080p screen).
 function qrSize() {
     const height = Main.layoutManager.primaryMonitor?.height ?? 1080;
-    return Math.max(280, Math.min(480, Math.round(height * 0.36)));
+    return Math.max(360, Math.min(640, Math.round(height * 0.5)));
 }
 
 function isEnrolled(userName) {
