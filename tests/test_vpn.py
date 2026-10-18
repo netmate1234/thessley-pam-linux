@@ -257,8 +257,8 @@ class ScriptTest(VpnBase):
         self.assertEqual(vpn.pending_method({}, url), ("openurl", url))                                  # nothing known
         self.assertEqual(vpn.pending_method({"IV_SSO": "openurl,crtext"}, url), ("openurl", url))
         # OpenVPN Connect 3.7.1 on Android offers "webauth,crtext": the page must open in the system browser
-        self.assertEqual(vpn.pending_method({"IV_SSO": "webauth,crtext"}, url), ("webauth", "external:" + url))
-        self.assertEqual(vpn.pending_method({"IV_SSO": "WebAuth"}, url), ("webauth", "external:" + url))
+        self.assertEqual(vpn.pending_method({"IV_SSO": "webauth,crtext"}, url), ("webauth", "WEB_AUTH:external:" + url))
+        self.assertEqual(vpn.pending_method({"IV_SSO": "WebAuth"}, url), ("webauth", "WEB_AUTH:external:" + url))
         self.assertEqual(vpn.pending_method({"IV_SSO": "openurl,webauth"}, url), ("openurl", url))       # the first-class one
         self.assertIsNone(vpn.pending_method({"IV_SSO": "crtext"}, url))                                 # it cannot show a page
 
@@ -267,7 +267,7 @@ class ScriptTest(VpnBase):
         self.assertEqual(vpn.authenticate(env, self.sock_path, fork=lambda: 4242, log=lambda t: None), 2)
         timeout, method, extra = open(env["auth_pending_file"]).read().split("\n")[:3]
         self.assertEqual(method, "webauth")
-        self.assertTrue(extra.startswith("external:https://vpn.example.org:47831/vpn/"), extra)
+        self.assertTrue(extra.startswith("WEB_AUTH:external:https://vpn.example.org:47831/vpn/"), extra)
         env2 = self.env(IV_SSO="crtext", auth_pending_file=os.path.join(self.tmp.name, "apf2"))
         before = len(self.approvals.flows)
         self.assertEqual(vpn.authenticate(env2, self.sock_path, fork=lambda: 4242, log=lambda t: None), 1)

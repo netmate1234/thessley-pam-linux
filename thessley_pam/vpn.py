@@ -321,13 +321,15 @@ def _log_default(text: str) -> None:
 
 def pending_method(env, url: str) -> tuple[str, str] | None:
     """How to tell this client to open the approval page, from the ways it says it can (IV_SSO, which OpenVPN gives the script):
-    "openurl" (the OpenVPN 2.6 command line client, when set) or "webauth" (OpenVPN Connect, flag `external`: the system browser,
-    where the page's "Open in the Thessley app" button can start the app). A client that lists neither cannot show a page."""
+    "openurl" (OpenVPN for Android, the 2.6 command line client when set: OpenVPN adds OPEN_URL: itself) or "webauth" (OpenVPN
+    Connect). For webauth OpenVPN sends the text as it is, so it is the whole message: WEB_AUTH:<flags>:<url>, flag `external` =
+    the system browser, where the page's "Open in the Thessley app" button can start the app. A client that lists neither cannot
+    show a page."""
     offered = {m.strip().lower() for m in env.get("IV_SSO", "").split(",") if m.strip()}
     if not offered or "openurl" in offered:      # nothing known: the OpenVPN default
         return "openurl", url
     if "webauth" in offered:
-        return "webauth", "external:" + url
+        return "webauth", "WEB_AUTH:external:" + url
     return None
 
 
