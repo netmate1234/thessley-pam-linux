@@ -44,13 +44,15 @@ address: `sudo thessley-pam web listen auto`. Every page says which computer it 
   long one approval counts for ssh, whether SSH passes work from any client IP, phone required for ssh, users adding their own
   phone, text links in approvals. Their own
   phone approves each change.
+- Administrators can also set the web request concurrency limit and the maximum number of remembered sign-in IP buckets.
+  Linux activity logs use the system journal; retention and rotation are controlled by journald on the host.
 - **VPN devices.** A second table for the devices enrolled for the OpenVPN second step (`thessley-pam vpn enroll`, see VPN.md):
   the same rename, switch off and remove, and **Add a VPN device**. They are not mixed with the keys for ssh, sudo and the screen.
   The VPN has no passes: every connection asks.
 - **Passes.** Under your keys, the approvals that currently let your account in without asking your device again (the grace
   hours for ssh, sudo or the screen login), each with an **End this pass** button, and **End all passes**. The next login
   then asks your device again. Ending a pass only takes access away, so it needs no fresh approval.
-- **Activity.** The newest 3,000 approvals, refusals, passes and enrolments, shown 20 per page (administrators can see everyone's).
+- **Activity.** The newest 3,000 approvals, refusals, pass grants and enrolments, shown 20 per page (administrators can see everyone's). Reuse of an existing pass is not logged. These entries go to the system journal, whose retention and rotation follow the host's journald limits.
 
 ## TPM proof
 

@@ -110,6 +110,35 @@ SSH_LOGIN_MODES = {
     "qr": "QR-only (phone approval; no SSH key or account password)",
 }
 SSH_LOGIN_MODE_PATH = os.path.join(store.BASE, "ssh-login-mode")
+def _ssh_policy_failure_path() -> str:
+    return os.path.join(store.BASE, "ssh-policy-failure")
+
+
+def ssh_policy_failure_mode() -> str:
+    """Behavior if the Linux SSH policy is unreadable: current compatibility default is password fallback."""
+    try:
+        with open(_ssh_policy_failure_path(), encoding="ascii") as f:
+            return "closed" if f.read(16).strip() == "closed" else "fallback"
+    except OSError:
+        return "fallback"
+
+
+def set_ssh_policy_failure_mode(mode: str) -> None:
+    if mode not in ("fallback", "closed"):
+        raise ValueError("Choose fallback or closed.")
+    store.ensure_dirs()
+    fd, tmp = tempfile.mkstemp(dir=store.BASE, prefix=".tmp.ssh-policy-failure.")
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as f:
+            f.write(mode + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, _ssh_policy_failure_path())
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def ssh_login_policy() -> dict[str, bool]:
@@ -204,7 +233,8 @@ def set_self_enroll(on: bool) -> None:
     _atomic_write(_config_path(), data, store.BASE)
 
 
-WEB_DEFAULTS = {"enabled": False, "listen": "", "port": 47820, "session_minutes": 15, "cert": "", "key": ""}
+WEB_DEFAULTS = {"enabled": False, "listen": "", "port": 47820, "session_minutes": 15, "cert": "", "key": "",
+                "max_connections": 32, "rate_limit_entries": 4096}
 
 
 VPN_DEFAULTS = {"enabled": False, "public_host": "", "page_port": 47830, "socket_group": "nogroup", "wait": 180}
@@ -254,8 +284,11 @@ def web_settings() -> dict:
     try:
         out["port"] = min(max(int(out["port"]), 1), 65535)
         out["session_minutes"] = min(max(int(out["session_minutes"]), 1), 240)
+        out["max_connections"] = min(max(int(out["max_connections"]), 4), 256)
+        out["rate_limit_entries"] = min(max(int(out["rate_limit_entries"]), 64), 100000)
     except (TypeError, ValueError):
         out["port"], out["session_minutes"] = WEB_DEFAULTS["port"], WEB_DEFAULTS["session_minutes"]
+        out["max_connections"], out["rate_limit_entries"] = WEB_DEFAULTS["max_connections"], WEB_DEFAULTS["rate_limit_entries"]
     out["enabled"] = bool(out["enabled"])
     return out
 

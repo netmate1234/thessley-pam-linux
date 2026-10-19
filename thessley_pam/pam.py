@@ -108,7 +108,6 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
             held = None
         if held:
             say(f"Thessley Passkey: approved earlier, valid for another {grants.remaining(held)}.")
-            _log(f"pass used for {username} ({service}, from {rhost}, {grants.remaining(held)} left)")
             return OK
 
     by_id = {d["credential_id"]: d for d in devices}

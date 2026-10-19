@@ -161,6 +161,12 @@ class WebBase(unittest.TestCase):
 
 
 class WebTest(WebBase):
+    def test_attempt_buckets_are_bounded(self):
+        grants.set_web(rate_limit_entries=64)
+        self.app.attempts = {f"192.0.2.{i}": [0.0] for i in range(64)}
+        self.assertTrue(self.app.rate_ok("198.51.100.7"))
+        self.assertLessEqual(len(self.app.attempts), 64)
+
     # -- sign-in
     def test_sign_in_with_a_phone_approval_opens_the_page(self):
         self.assertEqual(self.b.get("/keys")[0].status, 303)  # not signed in: sent to the sign-in page
@@ -351,6 +357,8 @@ class WebTest(WebBase):
         line = [m for m in self.logs if "adding a device" in m][-1]
         self.assertIn(f"for {USER}", line)
         self.assertIn(": done (c_", line)
+        self.assertNotIn("thessleypam://", line)
+        self.assertNotIn("Code:", line)
 
     def test_a_device_that_was_stored_is_never_reported_as_not_added(self):
         """If anything goes wrong after the device was stored, the page still says it was added."""
@@ -576,6 +584,7 @@ class WebTest(WebBase):
     def test_parse_activity(self):
         ok = web.parse_activity("2026-10-17T01:14:10+02:00 h thessley-pam[9]: pass granted to windows (sshd, from 192.168.1.190, 4 h)", None)
         self.assertEqual(ok, ("2026-10-17 01:14:10", "Pass granted to windows from 192.168.1.190 for 4 h"))
+        self.assertIsNone(web.parse_activity("2026-10-17T01:14:10+02:00 h thessley-pam[9]: pass used for alice (sshd, from 192.168.1.190, 3 h left)", None))
         self.assertIsNone(web.parse_activity("garbage", None))
         self.assertIsNone(web.parse_activity("2026-10-17T01:14:10+02:00 h thessley-pam[9]: timeout for bob (sshd, ssh)", "alice"))
 
@@ -675,11 +684,19 @@ class SettingsTest(unittest.TestCase):
     def test_defaults_and_limits(self):
         st = grants.web_settings()
         self.assertEqual((st["enabled"], st["listen"], st["port"], st["session_minutes"]), (False, "", 47820, 15))
+        self.assertEqual((st["max_connections"], st["rate_limit_entries"]), (32, 4096))
         grants.set_web(enabled=True, port=70000, session_minutes=0)
         st = grants.web_settings()
         self.assertEqual((st["enabled"], st["port"], st["session_minutes"]), (True, 65535, 1))
         with self.assertRaises(ValueError):
             grants.set_web(nonsense=1)
+
+    def test_ssh_policy_failure_mode_defaults_to_recovery_and_can_be_strict(self):
+        self.assertEqual(grants.ssh_policy_failure_mode(), "fallback")
+        grants.set_ssh_policy_failure_mode("closed")
+        self.assertEqual(grants.ssh_policy_failure_mode(), "closed")
+        grants.set_ssh_policy_failure_mode("fallback")
+        self.assertEqual(grants.ssh_policy_failure_mode(), "fallback")
 
 
 if __name__ == "__main__":

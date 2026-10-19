@@ -46,25 +46,47 @@
 #define NOTE_DIR "/run/thessley-pam/notes"
 #define NOTE_MAX_AGE_S 120
 #define SSH_LOGIN_MODE_FILE "/etc/thessley-pam/ssh-login-mode"
+#define SSH_POLICY_FAILURE_FILE "/etc/thessley-pam/ssh-policy-failure"
 
 enum { SSH_POLICY_QR_ONLY = 1, SSH_POLICY_KEY_QR = 2, SSH_POLICY_KEY_PASSWORD = 4 };
 
-/* Missing, malformed, or unsafe settings allow key + QR, with key + password recovery. */
+static int ssh_policy_fails_closed(void)
+{
+    char value[16] = {0};
+    int fd = open(SSH_POLICY_FAILURE_FILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+        return 0;  /* Preserve the existing recovery behavior until an administrator opts in. */
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0022) || st.st_size > 8) {
+        close(fd);
+        return 0;
+    }
+    ssize_t n = read(fd, value, sizeof value - 1);
+    close(fd);
+    return (n == 6 || (n == 7 && value[6] == '\n')) && memcmp(value, "closed", 6) == 0;
+}
+
+static int ssh_policy_default(void)
+{
+    return ssh_policy_fails_closed() ? SSH_POLICY_KEY_QR : SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+}
+
+/* Missing, malformed, or unsafe settings use the administrator-selected recovery behavior. */
 static int ssh_login_policy(void)
 {
     char value[32] = {0};
     int fd = open(SSH_LOGIN_MODE_FILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0)
-        return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+        return ssh_policy_default();
     struct stat st;
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0022) || st.st_size > 16) {
         close(fd);
-        return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+        return ssh_policy_default();
     }
     ssize_t n = read(fd, value, sizeof value - 1);
     close(fd);
     if (n <= 0 || n >= (ssize_t)sizeof value - 1)
-        return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+        return ssh_policy_default();
     value[n] = '\0';
     if (n > 0 && value[n - 1] == '\n')
         value[n - 1] = '\0';
@@ -82,7 +104,7 @@ static int ssh_login_policy(void)
         return SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR;
     if (strcmp(value, "OKP") == 0)
         return SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
-    return SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
+    return ssh_policy_default();
 }
 
 /* OpenSSH 7.8+ exposes prior successful methods to PAM as SSH_AUTH_INFO_0. */

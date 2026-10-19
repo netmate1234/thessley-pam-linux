@@ -74,8 +74,10 @@ Select any combination, with at least one path enabled. For QR-only or key + pas
 leave key + QR unchecked. The settings page and its POST action are restricted to administrators. Changes take effect
 on the next login. Keep `AuthenticationMethods` set to both alternatives shown above; the PAM module checks OpenSSH's
 `SSH_AUTH_INFO_0` to enforce key requirements. That value is provided to PAM by OpenSSH 7.8 and newer; if it is
-missing, key-required policies fail closed. With no valid policy file, the default enables key + QR and key + password
-recovery. QR-only remains an explicit opt-in.
+missing, key-required policies fail closed. If the SSH policy file is missing, malformed, or unsafe to read, the default allows
+key + account password recovery. Administrators can choose **SSH policy file recovery** on the web admin page to fail closed;
+then the module requires key + phone approval when the policy file cannot be read. Strict mode can prevent SSH access when the
+phone path is unavailable, so keep and test a separate recovery path before enabling it. The page shows the active behavior.
 
 Everyone not in the group keeps the old rules: the two PAM lines are skipped for them, and password and
 keyboard-interactive logins stay switched off by `sshd_config` as before.
@@ -205,7 +207,7 @@ Logging in: the key is checked first (a wrong key never reaches the phone), then
 the app and approve with your fingerprint. SSH continues automatically. In same-IP mode, the next logins from that address within the
 window go straight in; with `--ip-scope any`, they can come from any address. A shell login shows "approved earlier, valid for another ..." once; `ssh host command` shows nothing. (sshd shows
 PAM text from the auth step again when it opens a shell, so the module leaves the note in `/run/thessley-pam/notes` and
-prints it in the session step instead; `sudo journalctl -t thessley-pam` records every "pass used".)
+prints it in the session step instead. Pass reuse is not written to the journal; explicit approvals and pass grants remain logged.
 
 ## Scripts and other non-interactive clients
 

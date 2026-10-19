@@ -186,6 +186,18 @@ class WebApp:
         limit, window = LOGIN_RATE
         t = now()
         with self.lock:
+            cap = grants.web_settings()["rate_limit_entries"]
+            # Expire stale buckets before admitting a new source, and keep the map bounded under distributed scans.
+            if len(self.attempts) > cap or (len(self.attempts) >= cap and ip not in self.attempts):
+                for old_ip, times in list(self.attempts.items()):
+                    fresh = [x for x in times if t - x < window]
+                    if fresh:
+                        self.attempts[old_ip] = fresh
+                    else:
+                        self.attempts.pop(old_ip, None)
+                while len(self.attempts) > cap or (len(self.attempts) >= cap and ip not in self.attempts):
+                    oldest = min(self.attempts, key=lambda key: self.attempts[key][-1] if self.attempts[key] else 0)
+                    self.attempts.pop(oldest, None)
             hits = [x for x in self.attempts.get(ip, []) if t - x < window]
             if len(hits) >= limit:
                 self.attempts[ip] = hits
@@ -267,9 +279,9 @@ class WebApp:
                     device = stored[-1]
                     flow.label = flow.label or str(device.get("label", ""))
             flow.state = "done" if device else "failed"
-            notes = " | ".join(line.strip() for line in flow.lines if line.strip())[-300:]
+            # Flow output contains the temporary enrollment URI and pairing code.
             self.log(f"web page: adding a device for {user} (asked by {flow.owner}): {flow.state}"
-                     + (f" ({device.get('credential_id', '')})" if device else "") + f" [{notes}]")
+                     + (f" ({device.get('credential_id', '')})" if device else ""))
 
         threading.Thread(target=work, daemon=True).start()
         return flow
@@ -352,6 +364,14 @@ class WebApp:
             if name == "session":
                 grants.set_web(session_minutes=int(float(value)))
                 return "/admin", f"You are now signed out after {int(float(value))} minutes without activity (from the next sign-in)."
+            if name == "ssh_policy_failure":
+                grants.set_ssh_policy_failure_mode(value)
+                return "/admin", ("An unreadable SSH policy now fails closed; key + QR remains required."
+                                   if value == "closed" else "An unreadable SSH policy allows key + password recovery.")
+            if name == "web_limits":
+                connections, buckets = map(int, value.split(",", 1))
+                grants.set_web(max_connections=connections, rate_limit_entries=buckets)
+                return "/admin", "Web connection and rate-limit memory limits saved."
             if name == "require":
                 grants.set_require("sshd", value == "on")
                 return "/admin", "Device required for ssh: " + ("on." if value == "on" else "off.")
@@ -589,8 +609,6 @@ ACTIVITY = (
      lambda m: f"No answer in time for {m['user']} ({friendly_service(m['service'])}): refused"),
     (re.compile(r"pass granted to (?P<user>\S+) \((?P<service>[\w-]+), from (?P<ip>[\d.:-]+), (?P<h>[\d.]+) h"),
      lambda m: f"Pass granted to {m['user']} from {m['ip']} for {m['h']} h"),
-    (re.compile(r"pass used for (?P<user>\S+) \((?P<service>[\w-]+), from (?P<ip>[\d.:-]+)"),
-     lambda m: f"Pass used by {m['user']} from {m['ip']}"),
     (re.compile(r"no (?:device|phone) for (?P<user>\S+) \((?P<service>[\w-]+)"),
      lambda m: f"Refused {m['user']}: no device enrolled"),
     (re.compile(r"self-enrol started by '(?P<user>[^']+)'"),
@@ -918,14 +936,34 @@ def admin_page(viewer: Session, flash: str) -> str:
              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace">'
              f'<input type="text" name="value" value="{sshd_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
     session = grants.web_settings()["session_minutes"]
+    web_settings = grants.web_settings()
     grace += (f'<div class="card"><strong>Stay signed in to this page</strong>: {session} minutes without activity'
               f'<div class="dim">After this long without clicking anything you are signed out (always after 8 hours). '
               f'Applies from the next sign-in. 1 to 240 minutes.</div>'
               f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="session">'
               f'<input type="text" name="value" value="{session}" style="width:6rem"> minutes <button>Change</button></form></div>')
+    limits = (f'<div class="card"><strong>Web service resource limits</strong>'
+              f'<div class="dim">Maximum simultaneous web requests and remembered source-IP rate-limit buckets. '
+              f'When the bucket limit is reached, old buckets are expired/evicted. Current: {web_settings["max_connections"]} connections, '
+              f'{web_settings["rate_limit_entries"]} IPs.</div>'
+              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="web_limits">'
+              f'<input type="number" name="connections" min="4" max="256" value="{web_settings["max_connections"]}" aria-label="Maximum concurrent connections"> connections '
+              f'<input type="number" name="buckets" min="64" max="100000" value="{web_settings["rate_limit_entries"]}" aria-label="Rate limit entries"> IP buckets '
+              f'<button>Save limits</button></form></div>')
+    journal_info = ('<div class="card"><strong>Linux log retention</strong><div class="dim">Thessley activity is sent to the system journal, '
+                    'which rotates according to the host journald limits. Changing those limits affects other system services, '
+                    'so configure retention in the host journal settings rather than here.</div></div>')
+    policy_failure = grants.ssh_policy_failure_mode()
+    failure = (f'<div class="card"><strong>SSH policy file recovery</strong><div class="dim">If the SSH policy file is missing, malformed, or unsafe, '
+               f'current behavior is {"fail closed and require key + QR" if policy_failure == "closed" else "allow key + account password recovery"}. '
+               'Strict mode can lock out SSH if phone approval is unavailable; keep a tested recovery path.</div>'
+               f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="ssh_policy_failure">'
+               f'<select name="value"><option value="fallback"{" selected" if policy_failure == "fallback" else ""}>Allow key + password recovery</option>'
+               f'<option value="closed"{" selected" if policy_failure == "closed" else ""}>Fail closed; require key + QR</option></select> '
+               '<button>Save recovery behavior</button></form></div>')
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
-            + ssh_policy + grace
+            + ssh_policy + failure + limits + journal_info + grace
             + toggle("ssh_any_ip", "SSH passes from any client IP", ssh_any_ip,
                      "Cloud hosts can allow an approved SSH pass from changing client IPs. The pass still expires normally.")
             + toggle("self_enroll", "Users may add their own device", grants.self_enroll_allowed(),
@@ -1216,6 +1254,17 @@ def make_handler(app: WebApp):
                     minutes = -1
                 if not 1 <= minutes <= 240:
                     return self.html(400, "Not valid", flash_html("Give a number of minutes from 1 to 240."), s)
+            elif name == "ssh_policy_failure":
+                if value not in ("fallback", "closed"):
+                    return self.html(400, "Not valid", flash_html("Choose a recovery behavior."), s)
+            elif name == "web_limits":
+                try:
+                    connections, buckets = int(data.get("connections", "")), int(data.get("buckets", ""))
+                except ValueError:
+                    connections, buckets = 0, 0
+                if not 4 <= connections <= 256 or not 64 <= buckets <= 100000:
+                    return self.html(400, "Not valid", flash_html("Connections: 4–256. IP buckets: 64–100,000."), s)
+                value = f"{connections},{buckets}"
             elif name == "ssh_login_mode":
                 if value not in grants.SSH_LOGIN_MODES:
                     return self.html(400, "Not valid", flash_html("Choose a supported SSH login policy."), s)
@@ -1276,6 +1325,37 @@ def make_handler(app: WebApp):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
+    def __init__(self, *args, **kwargs):
+        self._worker_lock = threading.Lock()
+        self._active_workers = 0
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, address = super().get_request()
+        request.settimeout(10)
+        return request, address
+
+    def process_request(self, request, client_address):
+        with self._worker_lock:
+            if self._active_workers >= grants.web_settings()["max_connections"]:
+                # Do not perform a TLS handshake in the accept loop for rejected work.
+                self.shutdown_request(request)
+                return
+            self._active_workers += 1
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            with self._worker_lock:
+                self._active_workers -= 1
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._worker_lock:
+                self._active_workers -= 1
+
     def handle_error(self, request, client_address):  # a browser that hangs up mid-request is not an error here
         pass
 
@@ -1285,7 +1365,7 @@ def make_server(app: WebApp, ip: str, port: int, cert: str, key: str) -> Server:
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(cert, key)
     httpd = Server((ip, port), make_handler(app))
-    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
     return httpd
 
 
