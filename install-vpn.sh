@@ -37,6 +37,7 @@ RuntimeDirectory=thessley-pam
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 Group=nogroup
+ExecStartPre=/usr/bin/chown root:nogroup /run/thessley-pam
 ExecStartPre=/usr/bin/chmod 0750 /run/thessley-pam
 NoNewPrivileges=yes
 ProtectHome=yes

@@ -46,6 +46,10 @@ RuntimeDirectoryPreserve=yes
 # OpenVPN's auth hook runs as nobody:nogroup and connects to vpn.sock here.
 # Both services share this runtime directory, so keep its group/mode aligned.
 Group=nogroup
+# RuntimeDirectoryMode only applies when systemd creates the directory. Because
+# RuntimeDirectoryPreserve=yes keeps it across restarts, repair drift every start.
+ExecStartPre=/usr/bin/chown root:nogroup /run/thessley-pam
+ExecStartPre=/usr/bin/chmod 0750 /run/thessley-pam
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes

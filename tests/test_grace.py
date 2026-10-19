@@ -76,6 +76,9 @@ class GrantsTest(unittest.TestCase):
 
     def test_files_are_private(self):
         grants.add(USER, "sshd", "-", 4, "c_a", now=self.now)
+        # The socket's parent must remain traversable by OpenVPN's nobody:nogroup
+        # auth hook after any grant write; only GRANTS and its files are private.
+        self.assertEqual(os.stat(grants.RUN).st_mode & 0o777, 0o750)
         self.assertEqual(os.stat(grants.GRANTS).st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(os.path.join(grants.GRANTS, f"{USER}.json")).st_mode & 0o777, 0o600)
 
