@@ -41,8 +41,11 @@ ExecStart=/usr/local/sbin/thessley-pam approvals serve
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=thessley-pam
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
+# OpenVPN's auth hook runs as nobody:nogroup and connects to vpn.sock here.
+# Both services share this runtime directory, so keep its group/mode aligned.
+Group=nogroup
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
