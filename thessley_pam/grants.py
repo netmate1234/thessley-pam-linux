@@ -20,6 +20,7 @@ this user and connects from the same address during the window is let through wi
 of the convenience; keep the window short and end passes (end-pass) when in doubt.
 """
 
+import grp
 import json
 import os
 import tempfile
@@ -372,8 +373,14 @@ def _atomic_write(path: str, data, directory: str) -> None:
 
 
 def _ensure_dir() -> None:
+    # This directory also contains vpn.sock, which OpenVPN's auth hook opens as
+    # nobody:nogroup. Keep the shared parent traversable by that group; only the
+    # grants subdirectory and its files are private to root.
+    os.makedirs(RUN, mode=0o750, exist_ok=True)
+    if os.geteuid() == 0:
+        os.chown(RUN, 0, grp.getgrnam("nogroup").gr_gid)
+    os.chmod(RUN, 0o750)
     os.makedirs(GRANTS, mode=0o700, exist_ok=True)
-    os.chmod(RUN, 0o700)
     os.chmod(GRANTS, 0o700)
 
 
