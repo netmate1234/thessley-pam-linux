@@ -154,6 +154,17 @@ class WebApp:
         self.lock = threading.Lock()
         self.journal = journal or journal_lines
         self.qr = qr or qr_svg
+        self.httpd: Server | None = None
+        self.rebind_requested = False
+
+    def rebind(self) -> None:
+        """Restart the listener after an admin changes its bind address."""
+        self.rebind_requested = True
+        server = self.httpd
+        if server is not None:
+            timer = threading.Timer(1.5, server.shutdown)
+            timer.daemon = True
+            timer.start()
 
     # -- housekeeping
     def settings(self) -> dict:
@@ -372,6 +383,18 @@ class WebApp:
                 connections, buckets = map(int, value.split(",", 1))
                 grants.set_web(max_connections=connections, rate_limit_entries=buckets)
                 return "/admin", "Web connection and rate-limit memory limits saved."
+            if name == "localhost_only":
+                local_only = value == "on"
+                grants.set_web(localhost_only=local_only)
+                self.rebind()
+                st = grants.web_settings()
+                host = "127.0.0.1" if local_only else (st["listen"] or machine.lan_ip())
+                if host in ("0.0.0.0", "::"):
+                    host = machine.lan_ip()
+                return f"https://{host}:{st['port']}/admin", (
+                    "Admin page is now restricted to this computer at https://127.0.0.1:" + str(st["port"])
+                    if local_only else f"Admin page is available at https://{host}:{st['port']}."
+                )
             if name == "require":
                 grants.set_require("sshd", value == "on")
                 return "/admin", "Device required for ssh: " + ("on." if value == "on" else "off.")
@@ -950,6 +973,15 @@ def admin_page(viewer: Session, flash: str) -> str:
               f'<input type="number" name="connections" min="4" max="256" value="{web_settings["max_connections"]}" aria-label="Maximum concurrent connections"> connections '
               f'<input type="number" name="buckets" min="64" max="100000" value="{web_settings["rate_limit_entries"]}" aria-label="Rate limit entries"> IP buckets '
               f'<button>Save limits</button></form></div>')
+    web_host = "127.0.0.1" if web_settings["localhost_only"] else (web_settings["listen"] or machine.lan_ip())
+    if web_host in ("0.0.0.0", "::"):
+        web_host = machine.lan_ip()
+    localhost_setting = toggle(
+        "localhost_only", "Admin page available only on 127.0.0.1", web_settings["localhost_only"],
+        (f"When on, only this computer can connect at https://127.0.0.1:{web_settings['port']}/. "
+         f"When off, it listens at https://{web_host}:{web_settings['port']}/. Changing this restarts the web listener; "
+         "turning it on disconnects browsers on other computers.")
+    )
     journal_info = ('<div class="card"><strong>Linux log retention</strong><div class="dim">Thessley activity is sent to the system journal, '
                     'which rotates according to the host journald limits. Changing those limits affects other system services, '
                     'so configure retention in the host journal settings rather than here.</div></div>')
@@ -963,7 +995,7 @@ def admin_page(viewer: Session, flash: str) -> str:
                '<button>Save recovery behavior</button></form></div>')
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
-            + ssh_policy + failure + limits + journal_info + grace
+            + ssh_policy + failure + limits + localhost_setting + journal_info + grace
             + toggle("ssh_any_ip", "SSH passes from any client IP", ssh_any_ip,
                      "Cloud hosts can allow an approved SSH pass from changing client IPs. The pass still expires normally.")
             + toggle("self_enroll", "Users may add their own device", grants.self_enroll_allowed(),
@@ -1268,7 +1300,7 @@ def make_handler(app: WebApp):
             elif name == "ssh_login_mode":
                 if value not in grants.SSH_LOGIN_MODES:
                     return self.html(400, "Not valid", flash_html("Choose a supported SSH login policy."), s)
-            elif name in ("require", "self_enroll", "show_link", "ssh_any_ip"):
+            elif name in ("require", "self_enroll", "show_link", "ssh_any_ip", "localhost_only"):
                 if value not in ("on", "off"):
                     return self.html(400, "Not valid", flash_html("Choose on or off."), s)
             else:
@@ -1370,17 +1402,26 @@ def make_server(app: WebApp, ip: str, port: int, cert: str, key: str) -> Server:
 
 
 def serve() -> int:
-    st = grants.web_settings()
-    if not st["enabled"]:
-        print("The admin web page is switched off (sudo thessley-pam web on).")
-        return 0
-    ip = st["listen"] or machine.lan_ip()
-    cert, key = (st["cert"], st["key"]) if st["cert"] and st["key"] else default_cert_paths()
-    fingerprint = ensure_cert(cert, key, [ip, "127.0.0.1"])
-    httpd = make_server(WebApp(), ip, st["port"], cert, key)
-    print(f"Thessley admin page: https://{ip}:{st['port']}/   certificate SHA-256 {fingerprint}", flush=True)
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    app = WebApp()
+    while True:
+        st = grants.web_settings()
+        if not st["enabled"]:
+            print("The admin web page is switched off (sudo thessley-pam web on).")
+            return 0
+        ip = "127.0.0.1" if st["localhost_only"] else (st["listen"] or machine.lan_ip())
+        cert, key = (st["cert"], st["key"]) if st["cert"] and st["key"] else default_cert_paths()
+        fingerprint = ensure_cert(cert, key, [ip, "127.0.0.1"])
+        httpd = make_server(app, ip, st["port"], cert, key)
+        app.httpd = httpd
+        app.rebind_requested = False
+        print(f"Thessley admin page: https://{ip}:{st['port']}/   certificate SHA-256 {fingerprint}", flush=True)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            app.httpd = None
+            httpd.server_close()
+        if not app.rebind_requested:
+            break
     return 0

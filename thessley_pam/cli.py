@@ -420,7 +420,7 @@ def cmd_web(args) -> int:
     elif action != "status":
         sys.exit("Say status, on, off, serve, listen, port, session or cert.")
     from . import web
-    ip = st["listen"] or machine.lan_ip()
+    ip = "127.0.0.1" if st["localhost_only"] else (st["listen"] or machine.lan_ip())
     cert, key = (st["cert"], st["key"]) if st["cert"] and st["key"] else web.default_cert_paths()
     print(f"Admin web page: {'ON' if st['enabled'] else 'off'}   https://{ip}:{st['port']}/   (sessions end after {st['session_minutes']} min idle)")
     if os.path.exists(cert):

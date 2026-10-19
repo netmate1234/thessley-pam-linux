@@ -234,7 +234,7 @@ def set_self_enroll(on: bool) -> None:
 
 
 WEB_DEFAULTS = {"enabled": False, "listen": "", "port": 47820, "session_minutes": 15, "cert": "", "key": "",
-                "max_connections": 32, "rate_limit_entries": 4096}
+                "max_connections": 32, "rate_limit_entries": 4096, "localhost_only": False}
 
 
 VPN_DEFAULTS = {"enabled": False, "public_host": "", "page_port": 47830, "socket_group": "nogroup", "wait": 180}
@@ -290,6 +290,7 @@ def web_settings() -> dict:
         out["port"], out["session_minutes"] = WEB_DEFAULTS["port"], WEB_DEFAULTS["session_minutes"]
         out["max_connections"], out["rate_limit_entries"] = WEB_DEFAULTS["max_connections"], WEB_DEFAULTS["rate_limit_entries"]
     out["enabled"] = bool(out["enabled"])
+    out["localhost_only"] = bool(out["localhost_only"])
     return out
 
 

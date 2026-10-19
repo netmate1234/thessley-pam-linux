@@ -46,6 +46,9 @@ address: `sudo thessley-pam web listen auto`. Every page says which computer it 
   phone approves each change.
 - Administrators can also set the web request concurrency limit and the maximum number of remembered sign-in IP buckets.
   Linux activity logs use the system journal; retention and rotation are controlled by journald on the host.
+- Administrators can restrict this page to `127.0.0.1`. When enabled, only a browser on this computer can open it at
+  `https://127.0.0.1:47820/`; changing the setting restarts the listener. Turning the restriction off restores the configured
+  listen address (the computer's LAN address by default).
 - **VPN devices.** A second table for the devices enrolled for the OpenVPN second step (`thessley-pam vpn enroll`, see VPN.md):
   the same rename, switch off and remove, and **Add a VPN device**. They are not mixed with the keys for ssh, sudo and the screen.
   The VPN has no passes: every connection asks.
