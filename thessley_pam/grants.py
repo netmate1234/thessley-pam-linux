@@ -47,7 +47,7 @@ def _load_config() -> dict:
         return {}
 
 
-NO_GRACE = ("openvpn",)  # a VPN connection always asks: no pass, whatever the config file says
+NO_GRACE = ("openvpn", "thessley-vpn-download", "thessley-vpn-revoke")  # VPN access and certificate changes require fresh approval
 
 
 def grace_any_ip(service: str) -> bool:
