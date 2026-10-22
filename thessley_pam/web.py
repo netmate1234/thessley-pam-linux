@@ -1052,7 +1052,7 @@ def make_handler(app: WebApp):
             self.send_header("X-Frame-Options", "DENY")
             script = f"script-src 'nonce-{nonce}'" if nonce else "script-src 'none'"
             self.send_header("Content-Security-Policy",
-                             f"default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; "
+                             f"default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
                              f"form-action 'self'; frame-ancestors 'none'; base-uri 'none'; {script}")
             for k, v in extra or []:
                 self.send_header(k, v)
