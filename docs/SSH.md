@@ -81,17 +81,19 @@ recovery. QR-only remains an explicit opt-in.
 
 ### Per-user SSH controls
 
-Administrators can override the computer-wide policy for each account in `thessley-ssh` from **Admin → Users**. Each account
-has checkboxes for QR-only, key + QR, and key + account-password paths, plus **Block SSH**. Leave **Use the computer-wide
+Administrators can override the computer-wide policy for each account in `thessley-ssh` from **Admin → Users**. These accounts
+have checkboxes for QR-only, key + QR, and key + account-password paths, plus **Block SSH**. Leave **Use the computer-wide
 policy** checked to inherit the global choices. Multiple path boxes enable alternatives (OR); key + QR together with key +
-password gives password recovery when phone approval is unavailable. **Block SSH** refuses the account through the Thessley
-PAM path. Every change requires a fresh approval from the administrator's phone. Per-user settings are stored root-only under
-`/etc/thessley-pam/ssh-users/`; the previous value is kept as a `.bak` file. A missing or invalid override uses the global policy.
+password gives password recovery when phone approval is unavailable. Accounts outside `thessley-ssh` have a block-only control.
+**Block SSH** denies new SSH connections for that account at the SSH server, regardless of authentication method; an existing
+session stays connected. Every change requires a fresh approval from the administrator's phone. Per-user login paths are stored
+root-only under `/etc/thessley-pam/ssh-users/`; the previous value is kept as a `.bak` file. SSH blocks are stored in the
+root-owned `/etc/ssh/sshd_config.d/90-thessley-deny-users.conf`, validated with `sshd -t`, and applied with a reload that keeps
+existing sessions open. A missing or invalid login-path override uses the global policy.
 
 The Users section also shows each account's active phone count and links to device management, including first enrollment for
-accounts with no phone yet. These controls apply to `thessley-ssh` members only. Accounts outside the group do not enter the
-Thessley SSH PAM path, and explicit `Match User` authentication exceptions in `sshd_config` can take precedence over a PAM
-block. Review those exceptions separately when you intend to deny an account SSH access altogether.
+accounts with no phone yet. QR login-path controls apply to `thessley-ssh` members only. The SSH server block applies to any
+account and takes precedence over other authentication methods and `Match User` authentication exceptions.
 
 If the computer-wide policy file is missing or unreadable, the default enables key + QR and key + password recovery.
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Root entry point for updating the installed Thessley SSH policy and web UI code.
 # The updater takes a timestamped backup and rolls back changed files if activation fails.
-# It preserves sshd_config, /etc/pam.d/sshd, SSH grace settings, and service unit configuration.
+# It preserves sshd_config, /etc/pam.d/sshd, and SSH grace settings; it adds one narrow web-service write path
+# for Thessley's managed sshd deny-list fragment.
 set -Eeuo pipefail
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then

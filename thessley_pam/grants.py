@@ -25,6 +25,8 @@ import json
 import os
 import pwd
 import re
+import stat
+import subprocess
 import tempfile
 import time
 
@@ -119,6 +121,7 @@ SSH_LOGIN_MODES = {
 }
 SSH_LOGIN_MODE_PATH = os.path.join(store.BASE, "ssh-login-mode")
 SSH_USER_MODE_DIR = os.path.join(store.BASE, "ssh-users")
+SSH_DENY_USERS_PATH = "/etc/ssh/sshd_config.d/90-thessley-deny-users.conf"
 
 
 def _ssh_policy_failure_path() -> str:
@@ -163,6 +166,116 @@ def ssh_user_login_mode(username: str) -> str:
         return mode if mode == "blocked" or mode in _SSH_LOGIN_POLICIES else "inherit"
     except (KeyError, OSError):
         return "inherit"
+
+
+def ssh_denied_users() -> set[str]:
+    """Read Thessley's exact-account sshd deny list; malformed or unsafe files are errors."""
+    try:
+        fd = os.open(SSH_DENY_USERS_PATH, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return set()
+    with os.fdopen(fd, "r", encoding="ascii") as f:
+        info = os.fstat(f.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022
+                or info.st_size > 32768):
+            raise OSError("The managed SSH deny file is not a safe root-owned regular file.")
+        lines = [line.strip() for line in f if line.strip() and not line.lstrip().startswith("#")]
+    if not lines:
+        return set()
+    if len(lines) != 1 or not lines[0].startswith("DenyUsers "):
+        raise OSError("The managed SSH deny file has an unexpected format.")
+    users = set(lines[0].split()[1:])
+    if not users or any(not re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", name) for name in users):
+        raise OSError("The managed SSH deny file contains an invalid account name.")
+    return users
+
+
+def ssh_user_is_blocked(username: str) -> bool:
+    return username in ssh_denied_users()
+
+
+def set_ssh_user_blocked(username: str, blocked: bool) -> None:
+    """Block or unblock one account in sshd for all SSH auth methods, without restarting sshd."""
+    if not re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", username or ""):
+        raise ValueError("Invalid account name.")
+    try:
+        pwd.getpwnam(username)
+    except KeyError as exc:
+        raise ValueError("That account does not exist.") from exc
+    config = "/etc/ssh/sshd_config"
+    try:
+        with open(config, encoding="utf-8") as f:
+            main_config = f.read(65536)
+    except OSError as exc:
+        raise RuntimeError("Cannot read the SSH server configuration; no account was changed.") from exc
+    if not re.search(r"(?m)^\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf\s*(?:#.*)?$", main_config):
+        raise RuntimeError("This SSH server does not include sshd_config.d; no account was changed.")
+    users = ssh_denied_users()
+    if (username in users) == blocked:
+        return
+    if blocked:
+        users.add(username)
+    else:
+        users.discard(username)
+    content = ("DenyUsers " + " ".join(sorted(users)) + "\n") if users else ""
+    path = SSH_DENY_USERS_PATH
+    old = None
+    try:
+        with open(path, "rb") as f:
+            old = f.read(32769)
+        if len(old) > 32768:
+            raise OSError("The managed SSH deny file is too large.")
+    except FileNotFoundError:
+        pass
+
+    def write_atomic(target: str, data: bytes, mode: int) -> None:
+        fd, temp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".tmp.thessley-ssh.")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(temp, mode)
+            if os.geteuid() == 0:
+                os.chown(temp, 0, 0)
+            os.replace(temp, target)
+        except BaseException:
+            if os.path.exists(temp):
+                os.unlink(temp)
+            raise
+
+    if old is not None:
+        write_atomic(path + ".bak", old, 0o600)
+    reload_attempted = False
+    try:
+        if content:
+            write_atomic(path, content.encode("ascii"), 0o644)
+        else:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        check = subprocess.run(["/usr/sbin/sshd", "-t"], stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=15, check=False)
+        if check.returncode:
+            raise RuntimeError("sshd rejected the access rule; it was rolled back. " + check.stderr[-500:].strip())
+        reload_attempted = True
+        reload_result = subprocess.run(["systemctl", "reload", "ssh"], stdin=subprocess.DEVNULL,
+                                       capture_output=True, text=True, timeout=15, check=False)
+        if reload_result.returncode:
+            raise RuntimeError("Could not reload SSH; the account rule was rolled back. " + reload_result.stderr[-500:].strip())
+    except BaseException:
+        if old is None:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        else:
+            write_atomic(path, old, 0o644)
+        if reload_attempted:
+            subprocess.run(["systemctl", "reload", "ssh"], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=15, check=False)
+        raise
 
 
 def set_ssh_user_login_mode(username: str, mode: str) -> None:
@@ -234,12 +347,15 @@ def ssh_user_login_policy(username: str) -> dict[str, bool]:
 def set_ssh_user_login_paths(username: str, inherit: bool, qr_only: bool, key_qr: bool,
                              key_password: bool, blocked: bool) -> None:
     if inherit:
+        set_ssh_user_blocked(username, False)
         set_ssh_user_login_mode(username, "inherit")
     elif blocked:
         if qr_only or key_qr or key_password:
             raise ValueError("A blocked account cannot also have an allowed login path.")
+        set_ssh_user_blocked(username, True)
         set_ssh_user_login_mode(username, "blocked")
     elif qr_only or key_qr or key_password:
+        set_ssh_user_blocked(username, False)
         mode = ("O" if qr_only else "") + ("K" if key_qr else "") + ("P" if key_password else "")
         set_ssh_user_login_mode(username, mode)
     else:

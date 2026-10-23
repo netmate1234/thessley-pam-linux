@@ -498,6 +498,13 @@ class WebApp:
             return "/admin", f"SSH access settings saved for {username}."
         return run
 
+    def change_ssh_user_blocked(self, username: str, blocked: bool):
+        def run():
+            grants.set_ssh_user_blocked(username, blocked)
+            action = "blocked" if blocked else "unblocked"
+            return "/admin", f"SSH access {action} for {username}. Existing SSH sessions remain open."
+        return run
+
     # -- per-key details
     def key_usage(self) -> dict[str, tuple[int, str, str]]:
         """credential id -> (times it approved, when last, from which address) from the journal."""
@@ -1329,11 +1336,16 @@ def admin_page(viewer: Session, flash: str) -> str:
             devices, active_count = [], 0
         phone_state = (f"{active_count} active phone{'s' if active_count != 1 else ''}"
                        if active_count else "No active phone · first enrollment needed")
-        ssh_state = ("SSH QR policy applies" if username in qr_group else "Not in the thessley-ssh group")
+        blocked = grants.ssh_user_is_blocked(username)
+        ssh_state = ("Blocked at the SSH server" if blocked else
+                     "SSH QR policy applies" if username in qr_group else "Standard SSH authentication")
         ssh_controls = ""
         if username in qr_group:
             mode = grants.ssh_user_login_mode(username)
             policy = grants.ssh_user_login_policy(username)
+            blocked = blocked or policy["blocked"]
+            policy["blocked"] = blocked
+            ssh_state = "Blocked at the SSH server" if blocked else "SSH QR policy applies"
             ssh_controls = (
                 f'<form method="post" action="/admin/set" class="row ssh-user-policy-form">{hidden}'
                 '<input type="hidden" name="name" value="ssh_user_policy">'
@@ -1348,8 +1360,15 @@ def admin_page(viewer: Session, flash: str) -> str:
                 '</div>'
                 f'<button>Save SSH access for {esc(username)}</button></form>')
         else:
-            ssh_controls = ('<p class="dim">This account is outside <span class="mono">thessley-ssh</span>, '
-                            'so its SSH login does not pass through these per-user Thessley controls.</p>')
+            ssh_controls = (
+                f'<form method="post" action="/admin/set" class="row">{hidden}'
+                '<input type="hidden" name="name" value="ssh_user_policy">'
+                f'<input type="hidden" name="user" value="{esc(username)}">'
+                f'<label><input type="checkbox" name="blocked" value="on"{" checked" if blocked else ""}> '
+                '<span>Block SSH for this account</span></label>'
+                '<p class="dim">This works for accounts outside <span class="mono">thessley-ssh</span> too. '
+                'It blocks new SSH logins at the SSH server, for every authentication method; existing sessions stay open.</p>'
+                f'<button>Save SSH access for {esc(username)}</button></form>')
         account_rows.append(
             f'<div class="card"><strong>{esc(username)}</strong>'
             f'<div class="dim">SSH: {esc(ssh_state)}</div><div class="dim">Phone: {esc(phone_state)}</div>'
@@ -1360,9 +1379,10 @@ def admin_page(viewer: Session, flash: str) -> str:
         '<p class="dim">Choose an account to review its enrolled phones or add its first one. On the account page, select '
         '<strong>Add a device</strong>, scan the QR or open the link, then compare and confirm the two codes. '
         'The administrator signed in here must approve the change on their own phone.</p>'
-        '<p class="dim">The SSH QR policy is currently scoped to members of <span class="mono">thessley-ssh</span>. '
-        'Per-user settings override the computer-wide SSH policy for group members. “Block” refuses SSH through the Thessley PAM path. '
-        'Explicit SSH server exceptions may take precedence. QR-only requires sshd to permit keyboard-interactive login without a public key; '
+        '<p class="dim">QR login choices apply to members of <span class="mono">thessley-ssh</span>. '
+        'Per-user settings override the computer-wide SSH policy for group members. “Block SSH” applies at the SSH server to any account, '
+        'including accounts outside that group, and denies new connections using any authentication method. Existing sessions stay open. '
+        'QR-only requires sshd to permit keyboard-interactive login without a public key; '
         'if sshd requires <span class="mono">publickey,keyboard-interactive:pam</span>, use SSH key + QR instead.</p>'
         + ("".join(account_rows) or '<div class="card dim">No interactive accounts found.</div>')
         + '</section>'
@@ -1812,8 +1832,14 @@ def make_handler(app: WebApp):
                 key_qr = data.get("key_qr") == "on"
                 key_password = data.get("key_password") == "on"
                 blocked = data.get("blocked") == "on"
-                if username not in interactive_accounts() or username not in ssh_qr_group_members():
-                    return self.html(400, "Not valid", flash_html("Choose an account in the thessley-ssh group."), s)
+                if username not in interactive_accounts():
+                    return self.html(400, "Not valid", flash_html("Choose an interactive account on this computer."), s)
+                if username not in ssh_qr_group_members():
+                    if inherit or qr_only or key_qr or key_password:
+                        return self.html(400, "Not valid", flash_html("Accounts outside thessley-ssh can only be blocked or unblocked here."), s)
+                    self.start_change(s, f"changing SSH access for {username}",
+                                      app.change_ssh_user_blocked(username, blocked))
+                    return
                 if not inherit and not blocked and not (qr_only or key_qr or key_password):
                     return self.html(400, "Not valid", flash_html("Select an SSH login path, Use the computer-wide policy, or Block SSH."), s)
                 if blocked and (qr_only or key_qr or key_password):
