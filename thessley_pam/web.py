@@ -747,6 +747,8 @@ header{display:flex;align-items:center;gap:12px;justify-content:space-between;fl
 h1{font-size:1.5rem;margin:.2rem 0}h2{font-size:1.1rem;margin:1.6rem 0 .5rem}
 nav a,.link{color:var(--accent);text-decoration:none;margin-right:14px}nav{margin:6px 0 14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0}
+.admin-users{margin:30px 0 38px;padding-bottom:18px;border-bottom:2px solid var(--line)}
+.admin-users h2{margin:0 0 .45rem}.admin-users>p{margin:0 0 14px}
 .dim{color:var(--dim);font-size:.9rem}.ok{color:var(--ok)}.bad{color:var(--danger)}
 input[type=text]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:1rem}
 button{padding:9px 14px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font-size:.95rem;cursor:pointer}
