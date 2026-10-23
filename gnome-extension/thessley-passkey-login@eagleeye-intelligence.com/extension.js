@@ -14,6 +14,7 @@
 // calls straight through for any service other than gdm-thessley.
 
 import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import St from 'gi://St';
 
@@ -27,13 +28,11 @@ const SERVICE = 'gdm-thessley';
 const MARKER = 'THESSLEY-QR ';
 const ENROLLED = '/etc/thessley-pam-enrolled';
 const MIN_RESTART_SPACING_MS = 5000;
-// The link in the code is ~220 characters, which makes a 53 x 53 module QR code: at 180 px that is 3 px per
-// module, too small for a phone to read from a chair. Aim for 6 px or more, scaled to the screen: about 36% of
-// the screen height, never under 280 px (small laptop screens) or over 480 px.
-// Made bigger on request: about half the screen height, never under 360 px or over 640 px (8 px per module on a 1080p screen).
+// The link creates a dense QR code, so keep modules large enough to scan while leaving room for
+// the username and authentication controls above it. A 320 px code gives about 6 px per module.
 function qrSize() {
     const height = Main.layoutManager.primaryMonitor?.height ?? 1080;
-    return Math.max(360, Math.min(640, Math.round(height * 0.5)));
+    return Math.max(280, Math.min(420, Math.round(height * 0.32)));
 }
 
 function isEnrolled(userName) {
@@ -55,16 +54,27 @@ function cancelRestart(verifier) {
 }
 
 function startPhoneService(verifier) {
-    if (!verifier._userVerifier || !isEnrolled(verifier._userName) ||
-        verifier._activeServices.has(SERVICE) || verifier._unavailableServices.has(SERVICE))
+    const hasVerifier = Boolean(verifier._userVerifier);
+    const enrolled = isEnrolled(verifier._userName);
+    const active = verifier._activeServices.has(SERVICE);
+    const unavailable = verifier._unavailableServices.has(SERVICE);
+    if (!hasVerifier || !enrolled || active || unavailable || verifier._thessleyStarting) {
+        console.log(`[Thessley] QR start skipped: verifier=${hasVerifier} enrolled=${enrolled} active=${active} unavailable=${unavailable} starting=${Boolean(verifier._thessleyStarting)}`);
         return;
+    }
+    console.log('[Thessley] Starting QR PAM conversation');
+    verifier._thessleyStarting = true;
     verifier._thessleyStartedAt = GLib.get_monotonic_time() / 1000;
-    verifier._startService(SERVICE).catch(logError);
+    verifier._startService(SERVICE)
+        .catch(logError)
+        .finally(() => verifier._thessleyStarting = false);
 }
 
 export default class ThessleyPasskeyLogin extends Extension {
     enable() {
         this._injections = new InjectionManager();
+        const extensionPath = this.path;
+        console.log(`[Thessley] Extension enabled in mode ${Main.sessionMode.currentMode}`);
         const verifierProto = GdmUtil.ShellUserVerifier.prototype;
         const promptProto = AuthPrompt.AuthPrompt.prototype;
 
@@ -74,12 +84,33 @@ export default class ThessleyPasskeyLogin extends Extension {
             startPhoneService(this);
         });
 
+        // UnlockDialog can begin a verifier without going through the greeter's
+        // background-service setup. Start the phone flow when the verifier itself
+        // begins, after it has selected the user; the guard makes this safe alongside
+        // the greeter hook above.
+        this._injections.overrideMethod(verifierProto, 'begin', orig => function (...args) {
+            const result = orig.call(this, ...args);
+            startPhoneService(this);
+            return result;
+        });
+
+        // Unlock uses asynchronous reauthentication-channel setup. At begin(),
+        // _userVerifier may not exist yet; _beginVerification runs only after
+        // that channel is ready and the username has been selected.
+        this._injections.overrideMethod(verifierProto, '_beginVerification', orig => function (...args) {
+            const result = orig.call(this, ...args);
+            startPhoneService(this);
+            return result;
+        });
+
         // Our conversation's only message is the QR line; never queue it as on-screen text.
         this._injections.overrideMethod(verifierProto, '_onInfo', orig => function (client, serviceName, info) {
             if (serviceName !== SERVICE)
                 return orig.call(this, client, serviceName, info);
-            if (info.startsWith(MARKER))
+            if (info.startsWith(MARKER)) {
+                console.log('[Thessley] QR link received from PAM');
                 this.emit('thessley-qr', info.slice(MARKER.length).trim());
+            }
             return undefined;
         });
 
@@ -119,9 +150,15 @@ export default class ThessleyPasskeyLogin extends Extension {
         this._injections.overrideMethod(promptProto, 'begin', orig => function (...args) {
             if (!this._thessleyQrSignalId && this._userVerifier) {
                 this._thessleyQrSignalId = this._userVerifier.connect('thessley-qr',
-                    (_v, url) => showQr(this, url));
+                    (_v, url) => showQr(this, url, extensionPath));
             }
-            return orig.call(this, ...args);
+            const result = orig.call(this, ...args);
+            // The unlock dialog does not always start background PAM services through
+            // ShellUserVerifier._startBackgroundServices (the greeter does). Start the
+            // phone conversation here too; startPhoneService guards duplicate starts.
+            if (this._userVerifier)
+                startPhoneService(this._userVerifier);
+            return result;
         });
 
         this._injections.overrideMethod(promptProto, '_onDestroy', orig => function (...args) {
@@ -138,7 +175,7 @@ export default class ThessleyPasskeyLogin extends Extension {
     }
 }
 
-function showQr(prompt, url) {
+function showQr(prompt, url, extensionPath) {
     if (!url) {
         prompt._thessleyBox?.hide();
         return;
@@ -147,21 +184,41 @@ function showQr(prompt, url) {
         const box = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
             x_align: Clutter.ActorAlign.CENTER,
+            x_expand: false,
+            y_expand: false,
             style_class: 'thessley-qr-box',
         });
-        box.add_child(new St.Label({
+        const brand = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            x_align: Clutter.ActorAlign.CENTER,
+            style_class: 'thessley-qr-brand',
+        });
+        const logo = new St.Icon({
+            gicon: Gio.icon_new_for_string(`${extensionPath}/logo.png`),
+            icon_size: 36,
+            style_class: 'thessley-qr-logo',
+        });
+        brand.add_child(logo);
+        brand.add_child(new St.Label({
             text: 'Or scan with Thessley Passkey',
             x_align: Clutter.ActorAlign.CENTER,
             style_class: 'thessley-qr-label',
         }));
-        // QrCode draws in the foreground colour on transparent: put it on a white card in black, since a
-        // white-on-dark (inverted) code is hard for phone scanners.
-        const card = new St.Bin({style_class: 'thessley-qr-card', x_align: Clutter.ActorAlign.CENTER});
+        box.add_child(brand);
         const size = qrSize();
-        const qr = new QrCode({width: size, height: size, url, style_class: 'qr-code thessley-qr-code'});
-        card.set_child(qr);
-        box.add_child(card);
-        prompt.add_child(box);
+        const qr = new QrCode({
+            width: size,
+            height: size,
+            x_expand: false,
+            y_expand: false,
+            url,
+            style_class: 'qr-code thessley-qr-code',
+        });
+        box.add_child(qr);
+        // Keep the QR within GNOME's input well. Adding it directly to AuthPrompt puts it
+        // beside the full-height user well and can make the prompt allocate a blank panel
+        // beneath the code on the greeter.
+        (prompt._inputWell ?? prompt).add_child(box);
         prompt._thessleyBox = box;
         prompt._thessleyQr = qr;
         box.connect('destroy', () => {

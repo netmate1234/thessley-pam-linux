@@ -1,8 +1,8 @@
 # thessley-pam-linux
 
 Approve logins to a Linux computer with the Thessley Passkey Android app: `sudo`, the GNOME login and lock screens,
-and `ssh`. The phone holds a key in its secure hardware that needs a fingerprint for every signature; the computer
-only ever holds the matching public key.
+and `ssh`. The phone holds a key in Android Keystore (hardware-backed when the device supports it), protected by the
+chosen device authentication; the computer only ever holds the matching public key.
 
 ## How it works
 
@@ -28,7 +28,7 @@ only ever holds the matching public key.
 | ssh with a phone pass | ssh key + phone once, then the key alone for N hours | [docs/SSH.md](docs/SSH.md) |
 | Admin web page | sign in with a phone approval, manage your keys, settings and activity in a browser | [docs/WEB.md](docs/WEB.md) |
 
-Install order: `sudo apt install qrencode python3-cryptography`, then `sudo ./install.sh`, then whatever you want from
+Install order: `sudo apt install qrencode python3-cryptography python3-asn1crypto`, then `sudo ./install.sh`, then whatever you want from
 the table. `install.sh` copies the code into root-owned places (`/usr/local/lib/thessley-pam`) and never edits
 `/etc/pam.d`: the helper runs as root, so it must not live in a directory anyone else can write.
 

@@ -47,8 +47,20 @@
 #define NOTE_MAX_AGE_S 120
 #define SSH_LOGIN_MODE_FILE "/etc/thessley-pam/ssh-login-mode"
 #define SSH_POLICY_FAILURE_FILE "/etc/thessley-pam/ssh-policy-failure"
+#define SSH_USER_MODE_DIR "/etc/thessley-pam/ssh-users"
 
-enum { SSH_POLICY_QR_ONLY = 1, SSH_POLICY_KEY_QR = 2, SSH_POLICY_KEY_PASSWORD = 4 };
+enum { SSH_POLICY_QR_ONLY = 1, SSH_POLICY_KEY_QR = 2, SSH_POLICY_KEY_PASSWORD = 4, SSH_POLICY_BLOCKED = 8 };
+
+static int account_name(const char *s)
+{
+    size_t n = s ? strlen(s) : 0;
+    if (n == 0 || n > 32 || !((*s >= 'a' && *s <= 'z') || *s == '_'))
+        return 0;
+    for (s++; *s; s++)
+        if (!((*s >= 'a' && *s <= 'z') || (*s >= '0' && *s <= '9') || *s == '_' || *s == '.' || *s == '-'))
+            return 0;
+    return 1;
+}
 
 static int ssh_policy_fails_closed(void)
 {
@@ -71,25 +83,8 @@ static int ssh_policy_default(void)
     return ssh_policy_fails_closed() ? SSH_POLICY_KEY_QR : SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
 }
 
-/* Missing, malformed, or unsafe settings use the administrator-selected recovery behavior. */
-static int ssh_login_policy(void)
+static int ssh_policy_from_value(const char *value)
 {
-    char value[32] = {0};
-    int fd = open(SSH_LOGIN_MODE_FILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0)
-        return ssh_policy_default();
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0022) || st.st_size > 16) {
-        close(fd);
-        return ssh_policy_default();
-    }
-    ssize_t n = read(fd, value, sizeof value - 1);
-    close(fd);
-    if (n <= 0 || n >= (ssize_t)sizeof value - 1)
-        return ssh_policy_default();
-    value[n] = '\0';
-    if (n > 0 && value[n - 1] == '\n')
-        value[n - 1] = '\0';
     if (strcmp(value, "phone") == 0 || strcmp(value, "qk") == 0 || strcmp(value, "K") == 0)
         return SSH_POLICY_KEY_QR;
     if (strcmp(value, "fallback") == 0 || strcmp(value, "qkp") == 0 || strcmp(value, "KP") == 0)
@@ -104,7 +99,43 @@ static int ssh_login_policy(void)
         return SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR;
     if (strcmp(value, "OKP") == 0)
         return SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR | SSH_POLICY_KEY_PASSWORD;
-    return ssh_policy_default();
+    return -1;
+}
+
+static int ssh_read_policy(const char *path)
+{
+    char value[32] = {0};
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0022) || st.st_size > 16) {
+        close(fd);
+        return -1;
+    }
+    ssize_t n = read(fd, value, sizeof value - 1);
+    close(fd);
+    if (n <= 0 || n >= (ssize_t)sizeof value - 1)
+        return -1;
+    value[n] = '\0';
+    if (n > 0 && value[n - 1] == '\n')
+        value[n - 1] = '\0';
+    if (strcmp(value, "blocked") == 0)
+        return SSH_POLICY_BLOCKED;
+    return ssh_policy_from_value(value);
+}
+
+/* Missing, malformed, or unsafe overrides fall back to the admin-selected global behavior. */
+static int ssh_login_policy(const char *user)
+{
+    char path[512];
+    if (account_name(user) && snprintf(path, sizeof path, "%s/%s", SSH_USER_MODE_DIR, user) < (int)sizeof path) {
+        int policy = ssh_read_policy(path);
+        if (policy >= 0)
+            return policy;
+    }
+    int policy = ssh_read_policy(SSH_LOGIN_MODE_FILE);
+    return policy >= 0 ? policy : ssh_policy_default();
 }
 
 /* OpenSSH 7.8+ exposes prior successful methods to PAM as SSH_AUTH_INFO_0. */
@@ -225,7 +256,11 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
         return PAM_AUTH_ERR;
 
     int is_sshd = strcmp(item(pamh, PAM_SERVICE), "sshd") == 0;
-    int policy = is_sshd ? ssh_login_policy() : SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR;
+    int policy = is_sshd ? ssh_login_policy(user) : SSH_POLICY_QR_ONLY | SSH_POLICY_KEY_QR;
+    if (is_sshd && policy == SSH_POLICY_BLOCKED) {
+        pam_error(pamh, "Thessley Passkey: SSH login is disabled for this account.");
+        return PAM_MAXTRIES;
+    }
     int has_key = is_sshd && ssh_has_publickey(pamh);
     int qr_only_path = is_sshd && !has_key && (policy & SSH_POLICY_QR_ONLY);
     if (is_sshd && !has_key && !qr_only_path)
@@ -255,11 +290,9 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
         if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 2); }
         dup2(fds[1], 1);
         char *const args[] = { (char *)HELPER, (char *)"--marker", NULL };
-        char *const qr_only_env[] = { (char *)"PAM_TYPE=auth", e_user, e_service, e_rhost, e_tty,
-                                      (char *)"PAM_QR_ONLY=1", (char *)"PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
         char *const regular_env[] = { (char *)"PAM_TYPE=auth", e_user, e_service, e_rhost, e_tty,
                                       (char *)"PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
-        execve(HELPER, args, qr_only_path ? qr_only_env : regular_env);
+        execve(HELPER, args, regular_env);
         _exit(127);
     }
     close(fds[1]);

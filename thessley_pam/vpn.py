@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import grants, machine, pam, store
 
-SOCKET = "/run/thessley-pam/vpn.sock"
+SOCKET = "/run/thessley-pam-vpn/vpn.sock"
 SERVICE = "openvpn"
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 RHOST_RE = re.compile(r"^[0-9A-Fa-f:.]{1,45}$")

@@ -33,17 +33,17 @@ Wants=network-online.target
 ExecStart=/usr/local/sbin/thessley-pam vpn serve
 Restart=on-failure
 RestartSec=5
-RuntimeDirectory=thessley-pam
+RuntimeDirectory=thessley-pam-vpn
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 Group=nogroup
-ExecStartPre=/usr/bin/chown root:nogroup /run/thessley-pam
-ExecStartPre=/usr/bin/chmod 0750 /run/thessley-pam
+ExecStartPre=/usr/bin/chown root:nogroup /run/thessley-pam-vpn
+ExecStartPre=/usr/bin/chmod 0750 /run/thessley-pam-vpn
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled /run/thessley-pam
+ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled /run/thessley-pam-vpn
 
 [Install]
 WantedBy=multi-user.target

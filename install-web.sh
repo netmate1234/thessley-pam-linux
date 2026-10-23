@@ -29,7 +29,9 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled
+# The web UI issues client certificates; allow EasyRSA to update its PKI, but keep the CA signing key read-only.
+ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled -/etc/openvpn/easy-rsa-thessley/pki
+ReadOnlyPaths=-/etc/openvpn/easy-rsa-thessley/pki/private/ca.key
 
 [Install]
 WantedBy=multi-user.target

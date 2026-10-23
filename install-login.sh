@@ -32,6 +32,7 @@ install -d -o root -g root -m 0755 "$ext"
 for f in metadata.json extension.js stylesheet.css; do
     install -o root -g root -m 0644 "$src/gnome-extension/$uuid/$f" "$ext/$f"
 done
+install -o root -g root -m 0644 "$src/thessley_pam/logo.png" "$ext/logo.png"
 
 if ! grep -q "$uuid" "$greeter"; then
     cp -a "$greeter" "$greeter.bak-thessley"

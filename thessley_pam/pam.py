@@ -83,7 +83,7 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
         _log(f"unknown user {username!r} ({service})", warn=True)
         return REFUSED
     if not devices:
-        if not login and grants.requires_phone(service):
+        if not login and grants.requires_phone(service, username):
             say("Thessley Passkey: no device is enrolled for this account, so this login is refused.")
             _log(f"no device for {username} ({service}); refused because a device is required here", warn=True)
             return REFUSED
@@ -96,12 +96,11 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
 
     # A configured pass needs no new approval until it runs out. Never for the login screen.
     rhost = env.get("PAM_RHOST", "") or grants.LOCAL
-    # Set only by the root-owned PAM module for a keyless QR-only authentication path.
-    # This keeps remembered approval passes from bypassing the explicit QR-only choice.
-    qr_only = service == "sshd" and env.get("PAM_QR_ONLY") == "1"
-    grace = 0.0 if login or qr_only else grants.grace_hours(service)
+    # A QR-only policy controls which authentication path is allowed, not how long a
+    # successful phone approval lasts. SSH grace still applies to QR-only logins.
+    grace = 0.0 if login else grants.grace_hours(service)
     pass_rhost = "*" if grants.grace_any_ip(service) else rhost
-    if grace > 0 and not qr_only:
+    if grace > 0:
         try:
             held = grants.valid(username, service, pass_rhost, {d["credential_id"] for d in devices})
         except OSError:

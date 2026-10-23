@@ -1,8 +1,10 @@
 # OpenVPN with a device approval
 
-A VPN client connects only after **two** things: its personal **client certificate** (first factor) and an **approval on the
-account's enrolled device** (second factor, the same signed approval as for ssh and sudo). The client's screen shows a page
-with a QR code (or a text link); you scan it with the Thessley Passkey app and approve.
+A new VPN session connects only after **two** things: its personal **client certificate** (first factor) and an **approval on
+the account's enrolled device** (second factor, the same signed approval as for ssh and sudo). The client's screen shows a
+page with a QR code (or a text link); you scan it with the Thessley Passkey app and approve. After approval, OpenVPN issues
+a session token that it renews hourly while connected. The token remains valid for up to eight hours after its last renewal,
+so a network interruption does not immediately require another phone approval.
 
     client --UDP 1194--> OpenVPN (checks the certificate)
                               |  runs vpn-auth (as OpenVPN's user, never root)
@@ -84,17 +86,23 @@ for the VPN before the server remembered it can be moved there with `sudo thessl
     tls-version-min 1.2
     remote-cert-tls client
     verify-client-cert require
+    crl-verify /etc/openvpn/easy-rsa-thessley/pki/crl.pem
+    management /run/openvpn-server/thessley.mgmt unix
+    management-client-user root
 
     # the second factor
     script-security 2
     auth-user-pass-verify /usr/local/lib/thessley-pam/vpn-auth via-env
-    # no grace time: no auth-gen-token (a client that reconnects must be approved again), and no re-key that would ask again
-    reneg-sec 0
-    push "reneg-sec 0"
+    # reconnect token issued only after QR approval succeeds; maximum lifetime 8 hours
+    auth-gen-token 28800 3600
+    auth-gen-token-secret /etc/openvpn/server/thessley-auth-token.key
+    # renew tokens every hour; valid tokens handle re-auth without another QR
+    reneg-sec 3600
+    push "reneg-sec 3600"
 
     user nobody
     group nogroup                           # must be the group set with: thessley-pam vpn group GROUP
-    keepalive 10 120
+    keepalive 10 300
     persist-key
     persist-tun
     push "route 192.168.1.0 255.255.255.0"  # the networks the VPN reaches
@@ -106,15 +114,40 @@ the other). The helper makes the certificate and a ready profile:
 
     sudo ./vpn-new-client.sh alice laptop            # writes alice-laptop.ovpn; log in with the user name alice
 
+Create the token signing key once, before starting OpenVPN, and keep it root-only. Preserve this same key across server
+restarts; replacing it invalidates tokens clients already hold.
 
-## Client profile (`alice.ovpn`)
+    sudo /usr/sbin/openvpn --genkey auth-token /etc/openvpn/server/thessley-auth-token.key
+    sudo chown root:root /etc/openvpn/server/thessley-auth-token.key
+    sudo chmod 600 /etc/openvpn/server/thessley-auth-token.key
+
+The Thessley web page can create profiles and revoke client certificates from **Keys → VPN client profiles**. Each action requires a
+fresh phone approval. Revoking a certificate updates the CRL, blocks new connections, and disconnects that certificate's active
+session through the root-only local OpenVPN management socket. To enable the controls on a configured host, create the initial CRL
+and make the CRL readable by OpenVPN after it drops privileges:
+
+    cd /etc/openvpn/easy-rsa-thessley
+    EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 ./easyrsa gen-crl
+    chmod 711 /etc/openvpn/easy-rsa-thessley /etc/openvpn/easy-rsa-thessley/pki
+    chmod 644 /etc/openvpn/easy-rsa-thessley/pki/crl.pem
+
+Include the three server directives shown above. The EasyRSA and PKI directories are traversable but not listable by other users;
+private CA and client keys stay root-only. `install-web.sh` gives the web service write access to the PKI and keeps the CA key
+read-only. OpenVPN reads an updated CRL for new connections; the management socket lets the web app end an existing connection for
+the revoked certificate without restarting the VPN server.
+
+
+## Client profile downloaded from the web GUI (`alice.ovpn`)
 
     client
     dev tun
     proto udp
     remote vpn.example.org 1194
     remote-cert-tls server        # the client checks the SERVER's certificate (the server file says: client)
-    auth-user-pass          # user name: alice (the certificate name); password: anything, it is not checked
+    <auth-user-pass>        # web GUI downloads embed these two lines
+    alice                   # account name matching the certificate
+    thessley-qr-login       # placeholder; the server ignores this password
+    </auth-user-pass>
     auth-nocache
     <ca> ... </ca>
     <cert> ... </cert>
@@ -145,6 +178,8 @@ that has a valid certificate **and** an approved device, so keep ssh and the oth
 The tests cover the daemon, the script (exit codes, the files it writes) and the page. They do not start a real OpenVPN: the
 first real connection is the check that your OpenVPN version and client honour the pending authentication.
 
-- Each approval is for one connection. There is no grace time and no pass for the VPN (unlike ssh): every connection, and every
-  reconnect after the server dropped it, asks the device again. `thessley-pam grace --service openvpn` refuses to set one.
+- A successful QR approval can be reused only through OpenVPN's server-signed reconnect token, valid for at most eight hours
+  after its last renewal (tokens are renewed hourly while connected). The
+  client certificate is still checked on every connection; revoking it blocks reconnects. This token does not create an ssh
+  pass or a reusable Thessley approval. After expiry, a new connection needs a fresh QR approval.
 - The apps show it as "Approve VPN login".

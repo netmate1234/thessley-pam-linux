@@ -65,7 +65,9 @@ authentication failures". Plain PAM text would not do: sshd drops it when a logi
 
 The admin web page has three independent login paths for members of `thessley-ssh`:
 
-- **QR-only:** no SSH key or account password; each login requires a fresh phone approval and ignores saved SSH passes.
+- **QR-only:** no SSH key or account password; a fresh phone approval creates the configured SSH pass. Until it expires,
+  eligible logins from the configured IP scope can use that pass without another approval. Set the SSH pass to 0 to ask
+  for a new phone approval at every login.
 - **SSH key + QR approval:** a public key is required, followed by phone approval. A saved SSH pass may apply.
 - **SSH key + account password:** a public key and the account password are required. If this and key + QR are both
   enabled, missing phone enrollment, a denied approval, or a timeout can fall back to the account password.
@@ -74,10 +76,24 @@ Select any combination, with at least one path enabled. For QR-only or key + pas
 leave key + QR unchecked. The settings page and its POST action are restricted to administrators. Changes take effect
 on the next login. Keep `AuthenticationMethods` set to both alternatives shown above; the PAM module checks OpenSSH's
 `SSH_AUTH_INFO_0` to enforce key requirements. That value is provided to PAM by OpenSSH 7.8 and newer; if it is
-missing, key-required policies fail closed. If the SSH policy file is missing, malformed, or unsafe to read, the default allows
-key + account password recovery. Administrators can choose **SSH policy file recovery** on the web admin page to fail closed;
-then the module requires key + phone approval when the policy file cannot be read. Strict mode can prevent SSH access when the
-phone path is unavailable, so keep and test a separate recovery path before enabling it. The page shows the active behavior.
+missing, key-required policies fail closed. With no valid policy file, the default enables key + QR and key + password
+recovery. QR-only remains an explicit opt-in.
+
+### Per-user SSH controls
+
+Administrators can override the computer-wide policy for each account in `thessley-ssh` from **Admin → Users**. Each account
+has checkboxes for QR-only, key + QR, and key + account-password paths, plus **Block SSH**. Leave **Use the computer-wide
+policy** checked to inherit the global choices. Multiple path boxes enable alternatives (OR); key + QR together with key +
+password gives password recovery when phone approval is unavailable. **Block SSH** refuses the account through the Thessley
+PAM path. Every change requires a fresh approval from the administrator's phone. Per-user settings are stored root-only under
+`/etc/thessley-pam/ssh-users/`; the previous value is kept as a `.bak` file. A missing or invalid override uses the global policy.
+
+The Users section also shows each account's active phone count and links to device management, including first enrollment for
+accounts with no phone yet. These controls apply to `thessley-ssh` members only. Accounts outside the group do not enter the
+Thessley SSH PAM path, and explicit `Match User` authentication exceptions in `sshd_config` can take precedence over a PAM
+block. Review those exceptions separately when you intend to deny an account SSH access altogether.
+
+If the computer-wide policy file is missing or unreadable, the default enables key + QR and key + password recovery.
 
 Everyone not in the group keeps the old rules: the two PAM lines are skipped for them, and password and
 keyboard-interactive logins stay switched off by `sshd_config` as before.

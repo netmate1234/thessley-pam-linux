@@ -22,19 +22,23 @@ unless you give the service a real certificate with `web cert`). `web status` pr
 from __future__ import annotations
 
 import base64
+import csv
 import datetime
 import grp
 import hashlib
 import hmac
 import html
+import io
 import ipaddress
 import json
 import os
 import pwd
 import re
 import secrets
+import shlex
 import socket
 import ssl
+import stat
 import subprocess
 import threading
 import time
@@ -46,10 +50,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from . import cli, grants, machine, pam, store
+from . import cli, grants, machine, pam, store, vpn
 
 SERVICE_LOGIN = "thessley-web"
 SERVICE_CHANGE = "thessley-web-change"
+SERVICE_VPN_DOWNLOAD = "thessley-vpn-download"
+SERVICE_VPN_REVOKE = "thessley-vpn-revoke"
 SERVICE_DEVICE = cli.APPROVE_SERVICE
 
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
@@ -90,6 +96,30 @@ def is_admin(username: str) -> bool:
     return False
 
 
+def interactive_accounts() -> list[str]:
+    """Accounts an administrator can manage from the web page, including accounts with no enrolled phone yet."""
+    no_login = {"/bin/false", "/usr/sbin/nologin", "/sbin/nologin", "/usr/bin/nologin"}
+    names = set()
+    for entry in pwd.getpwall():
+        if (USER_RE.fullmatch(entry.pw_name) and (entry.pw_uid == 0 or entry.pw_uid >= 1000)
+                and entry.pw_shell not in no_login):
+            names.add(entry.pw_name)
+    return sorted(names)
+
+
+def ssh_qr_group_members() -> set[str]:
+    """Return accounts for which the installed SSH PAM group policy applies."""
+    try:
+        group = grp.getgrnam("thessley-ssh")
+    except KeyError:
+        return set()
+    members = set(group.gr_mem)
+    for entry in pwd.getpwall():
+        if entry.pw_gid == group.gr_gid:
+            members.add(entry.pw_name)
+    return members
+
+
 # ---- one approval or enrolment in progress -----------------------------------------------------------------------
 
 class Flow:
@@ -104,6 +134,7 @@ class Flow:
         self.state = "starting"   # starting, waiting, confirm (enrolment: codes shown), approved, refused, timeout, done, failed
         self.lines: list[str] = []
         self.link = ""
+        self.qr_svg_data = ""
         self.code = ""
         self.label = ""
         self.created = now()
@@ -150,6 +181,7 @@ class WebApp:
         self.log = log or syslog_info
         self.sessions: dict[str, Session] = {}
         self.flows: dict[str, Flow] = {}
+        self.vpn_downloads: dict[str, tuple[str, bytes, str, float]] = {}
         self.attempts: dict[str, list[float]] = {}
         self.lock = threading.Lock()
         self.journal = journal or journal_lines
@@ -179,6 +211,30 @@ class WebApp:
                 self.flows[fid].cancel.set()
                 self.flows[fid].answered.set()
                 del self.flows[fid]
+            for token in [k for k, item in self.vpn_downloads.items() if item[3] <= t]:
+                del self.vpn_downloads[token]
+
+    def issue_vpn_download(self, owner: str, body: bytes, filename: str) -> str | None:
+        """Keep one approved VPN export short-lived, session-bound and single-use."""
+        token = secrets.token_urlsafe(32)
+        with self.lock:
+            t = now()
+            for expired in [k for k, item in self.vpn_downloads.items() if item[3] <= t]:
+                del self.vpn_downloads[expired]
+            if len(self.vpn_downloads) >= 32:
+                return None
+            self.vpn_downloads[token] = (owner, body, filename, t + 180)
+        return token
+
+    def take_vpn_download(self, token: str, owner: str) -> tuple[bytes, str] | None:
+        with self.lock:
+            item = self.vpn_downloads.get(token)
+            if item is None or item[3] <= now() or item[0] != owner:
+                if item is not None and item[3] <= now():
+                    del self.vpn_downloads[token]
+                return None
+            del self.vpn_downloads[token]
+            return item[1], item[2]
 
     def session(self, token: str | None) -> Session | None:
         if not token:
@@ -326,10 +382,10 @@ class WebApp:
 
     # -- what a signed-in account may touch
     def target(self, session: Session, wanted: str | None) -> str | None:
-        """The account whose keys are shown: your own, or (administrators) any account that has a key list."""
+        """The account whose keys are shown: your own, or any interactive account chosen by an administrator."""
         if not wanted or wanted == session.user:
             return session.user
-        if is_admin(session.user) and USER_RE.match(wanted) and wanted in store.all_users():
+        if is_admin(session.user) and USER_RE.fullmatch(wanted) and wanted in interactive_accounts():
             return wanted
         return None
 
@@ -426,13 +482,20 @@ class WebApp:
             grants.set_ssh_login_paths(qr_only, key_qr, key_password)
             paths = []
             if qr_only:
-                paths.append("QR-only with fresh phone approval")
+                paths.append("QR-only with the configured SSH approval pass")
             if key_qr:
                 paths.append("SSH key + QR approval")
             if key_password:
                 paths.append("SSH key + account password")
             message = "SSH login paths saved: " + "; ".join(paths) + "."
             return "/admin", message
+        return run
+
+    def change_ssh_user_policy(self, username: str, inherit: bool, qr_only: bool, key_qr: bool,
+                               key_password: bool, blocked: bool):
+        def run():
+            grants.set_ssh_user_login_paths(username, inherit, qr_only, key_qr, key_password, blocked)
+            return "/admin", f"SSH access settings saved for {username}."
         return run
 
     # -- per-key details
@@ -609,9 +672,12 @@ def ensure_cert(cert_path: str, key_path: str, ips: list[str]) -> str:
 
 
 def qr_svg(link: str) -> bytes:
-    """The QR code for a link as an SVG image, from qrencode."""
-    return subprocess.run(["/usr/bin/qrencode", "-t", "SVG", "-m", "2", "-s", "6", "-o", "-", link],
-                          check=True, capture_output=True, timeout=10).stdout
+    """The QR code for a link as an SVG image, with crisp module edges in browsers."""
+    svg = subprocess.run(["/usr/bin/qrencode", "-t", "SVG", "-m", "2", "-s", "6", "-o", "-", link],
+                         check=True, capture_output=True, timeout=10).stdout
+    # qrencode emits one adjacent SVG rectangle per dark module. At fractional CSS
+    # scaling, browser antialiasing can leave thin white seams unless edges are crisp.
+    return re.sub(rb"<svg(?=[\s>])", b'<svg shape-rendering="crispEdges"', svg, count=1)
 
 
 def journal_lines() -> list[str]:
@@ -643,7 +709,8 @@ ACTIVITY = (
 
 def friendly_service(name: str) -> str:
     return {"sshd": "ssh", "sudo": "sudo", "gdm-thessley": "screen login", SERVICE_LOGIN: "web sign-in",
-            SERVICE_CHANGE: "a change to keys", SERVICE_DEVICE: "adding a device"}.get(name, name)
+            SERVICE_CHANGE: "a change to keys", SERVICE_DEVICE: "adding a device",
+            SERVICE_VPN_DOWNLOAD: "a VPN profile download", SERVICE_VPN_REVOKE: "revoking a VPN certificate"}.get(name, name)
 
 
 def parse_activity(line: str, only_user: str | None) -> tuple[str, str] | None:
@@ -684,7 +751,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}bu
 .ssh-policy-options input[type=checkbox]{width:1.1rem;height:1.1rem;flex:0 0 auto;margin:.2rem 0 0}
 .flash{border-left:4px solid var(--ok);padding:8px 12px;margin:10px 0;background:var(--card)}
 code,.mono{font-family:ui-monospace,monospace;word-break:break-all;font-size:.85rem}
-.qr{display:block;margin:12px auto;background:#fff;padding:6px;border-radius:8px;width:min(100%,520px);max-width:100%;height:auto}
+.qr{display:block;margin:12px auto;background:#fff;padding:6px;border-radius:8px;width:min(100%,520px);max-width:100%;height:auto;image-rendering:pixelated}
 table{width:100%;border-collapse:collapse}td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top;font-size:.92rem}
 .table-wrap{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
 .key-details{margin-top:8px;border-top:1px solid var(--line);min-width:0}
@@ -759,14 +826,17 @@ def wait_page(flow: Flow, nonce: str, session: Session | None, heading: str, not
 const id = %s;
 const live = document.getElementById('live');
 let last = '';
+let qrReady = false;
+let qrData = '';
 function el(tag, text, cls) { const e = document.createElement(tag); if (text) e.textContent = text; if (cls) e.className = cls; return e; }
 async function tick() {
   let again = true;
   try {
-    const r = await fetch('/status/' + id, {credentials: 'same-origin'});
+    const r = await fetch('/status/' + id + (qrReady ? '' : '?qr=1'), {credentials: 'same-origin'});
     const s = await r.json();
     if (s.next) { location.href = s.next; return; }
-    const key = JSON.stringify(s);
+    if (s.qr_svg) { qrData = s.qr_svg; qrReady = true; }
+    const key = JSON.stringify({...s, qr_svg: ''}) + (qrData ? ':qr-ready' : '');
     if (key !== last) {
       last = key;
       live.replaceChildren();
@@ -775,8 +845,12 @@ async function tick() {
           const open = el('a', 'Open this request in the Thessley app', 'btn'); open.href = s.link;
           live.append(open, el('p', 'On a computer or device that has the app, this opens it with this request ready.', 'dim'));
         }
-        const img = el('img', '', 'qr'); img.alt = 'QR code'; img.src = '/qr/' + id + '.svg';
-        live.append(img, el('p', 'Or open this link in the Thessley Passkey app (paste it, or run thessley-passkey respond):', 'dim'), el('p', s.link, 'mono'));
+        if (qrData) {
+          const img = el('img', '', 'qr'); img.alt = 'QR code'; img.src = 'data:image/svg+xml;base64,' + qrData;
+          img.onerror = () => { img.remove(); live.append(el('p', 'The QR code could not be displayed. Use the approval link below.', 'bad')); };
+          live.append(img);
+        }
+        live.append(el('p', 'Or open this link in the Thessley Passkey app (paste it, or run thessley-passkey respond):', 'dim'), el('p', s.link, 'mono'));
       } else if (!s.message) {
         live.append(el('p', 'Getting the request ready…', 'dim'));
       }
@@ -842,19 +916,329 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
         return (f'<form method="post" action="/keys/{action}"><input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
                 f'<input type="hidden" name="user" value="{esc(user)}"><div class="row"><button class="primary">{esc(text)}</button></div></form>')
     note = ('<p class="dim">Changes ask your device for a fresh approval first, so nobody who only has this browser can change them.</p>')
-    vpn_host = grants.vpn_settings()["public_host"]
-    vpn_note = ("<p class='dim'>Devices enrolled for the VPN: they approve a VPN login (after the client certificate) from the host "
-                "named on the card. Every VPN connection asks for a fresh approval: there are no passes and no grace time for the VPN. "
-                "Add a device here, or on the computer with <span class='mono'>sudo thessley-pam vpn enroll</span>.</p>"
-                if vpn_host else
-                "<p class='dim'>No VPN public host is set, so a VPN device cannot be added here: "
-                "<span class='mono'>sudo thessley-pam vpn public-host NAME</span>.</p>")
+    vpn_html = ""
+    if vpn_available():
+        vpn_host = grants.vpn_settings()["public_host"]
+        vpn_note = ("<p class='dim'>Devices enrolled for the VPN approve each VPN login after the client certificate. "
+                    "Every connection asks for fresh approval; VPN logins do not use passes or grace time. "
+                    "Add a device here, or on the computer with <span class='mono'>sudo thessley-pam vpn enroll</span>.</p>")
+        profiles = vpn_client_profiles(user)
+        revoked_profiles = vpn_revoked_profiles(user)
+        can_revoke = vpn_revocation_available()
+        profile_note = ("<p class='dim'>Every download requires a fresh QR phone approval, even when you are already signed in. Each file contains "
+                        "that device's private key and the VPN shared key, plus the account name and a placeholder VPN password so the client "
+                        "does not prompt for them. The VPN server ignores that password. Store the profile securely and import it only on that device.</p>"
+                        if profiles else
+                        "<p class='dim'>No OpenVPN client certificates were found for this account. Create a separate key for each device below.</p>")
+        profile_cards = "".join(
+            '<div class="card"><strong>' + esc(label) + '</strong>'
+            + f'<form method="post" action="/keys/vpn-profile" class="row"><input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
+            + f'<input type="hidden" name="user" value="{esc(user)}"><input type="hidden" name="certificate" value="{esc(cn)}">'
+            + '<button class="primary">Approve and download .ovpn profile</button></form>'
+            + (f'<form method="post" action="/keys/vpn-revoke" class="row" onsubmit="return confirm(\'Revoke this certificate and disconnect this device from the VPN?\')">'
+               f'<input type="hidden" name="csrf" value="{esc(viewer.csrf)}"><input type="hidden" name="user" value="{esc(user)}">'
+               f'<input type="hidden" name="certificate" value="{esc(cn)}"><button class="danger">Revoke certificate</button></form>'
+               if can_revoke else "") + '</div>'
+            for cn, label in profiles
+        )
+        revoked_cards = "".join(f'<div class="card"><strong>{esc(label)}</strong> <span class="bad">Revoked</span></div>'
+                                for _cn, label in revoked_profiles)
+        create_profile = (
+            f'<form method="post" action="/keys/vpn-create" class="row"><input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
+            f'<input type="hidden" name="user" value="{esc(user)}">'
+            '<label for="vpn-device-name">New device name</label>'
+            '<input id="vpn-device-name" name="device" required maxlength="32" pattern="[A-Za-z0-9_.-]{1,32}" '
+            'placeholder="phone or laptop" autocomplete="off">'
+            '<button class="primary">Approve and create VPN key</button></form>'
+            '<p class="dim">Use a different name for each device (letters, digits, dot, underscore or hyphen; up to 32 characters). '
+            'Fresh phone approval creates the key and downloads its profile once. The profile contains a private key; keep it secure. '
+            'Downloading an existing profile again asks for another fresh approval.</p>')
+        revoke_note = ("<p class='dim'>Revoking requires a fresh phone approval. It blocks future connections and disconnects the selected device.</p>"
+                       if can_revoke else
+                       "<p class='dim'>Certificate revocation is unavailable until CRL enforcement and the local OpenVPN management socket are configured.</p>")
+        vpn_html = ("<h2>VPN devices</h2>" + vpn_note
+                    + key_cards(user, viewer, vpn_devices, details, "No device is enrolled for the VPN.")
+                    + (add_form("addvpn", "Add a VPN device") if vpn_host else "")
+                    + "<h2>VPN client profiles</h2>" + profile_note + profile_cards + revoke_note
+                    + ("<h3>Revoked certificates</h3>" + revoked_cards if revoked_cards else "") + create_profile)
     return (flash_html(flash) + f"<h2>Keys for {esc(user)}</h2>{who}{note}"
             + key_cards(user, viewer, plain, details, "No keys are enrolled for this account.")
             + add_form("add", "Add a device") + passes_html(user, viewer, devices)
-            + "<h2>VPN devices</h2>" + vpn_note
-            + key_cards(user, viewer, vpn_devices, details, "No device is enrolled for the VPN.")
-            + (add_form("addvpn", "Add a VPN device") if vpn_host else ""))
+            + vpn_html)
+
+
+VPN_EASYRSA = "/etc/openvpn/easy-rsa-thessley"
+VPN_PKI = os.path.join(VPN_EASYRSA, "pki")
+VPN_SERVER_CONFIG = "/etc/openvpn/server/thessley.conf"
+VPN_CRL = os.path.join(VPN_PKI, "crl.pem")
+VPN_MANAGEMENT_SOCKET = "/run/openvpn-server/thessley.mgmt"
+VPN_DEVICE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
+VPN_CERT_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}(?:@[A-Za-z0-9_.-]{1,32})?$")
+VPN_EASYRSA_LOCK = threading.Lock()
+
+
+def read_vpn_file(path: str) -> bytes:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file")
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            return stream.read()
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def vpn_certificate_status(cn: str) -> str | None:
+    """Read the EasyRSA database state by the serial in a validated certificate."""
+    if not VPN_CERT_RE.fullmatch(cn):
+        return None
+    try:
+        cert = x509.load_pem_x509_certificate(read_vpn_file(os.path.join(VPN_PKI, "issued", cn + ".crt")))
+        serial = cert.serial_number
+        index = read_vpn_file(os.path.join(VPN_PKI, "index.txt")).decode("ascii")
+    except (OSError, ValueError, UnicodeError):
+        return None
+    for line in index.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 6 and fields[0] in ("V", "R"):
+            try:
+                if int(fields[3], 16) == serial:
+                    return fields[0]
+            except ValueError:
+                continue
+    return None
+
+
+def vpn_client_profiles(user: str) -> list[tuple[str, str]]:
+    """List issued OpenVPN certificates belonging to one local account; never expose filesystem paths to the page."""
+    if not USER_RE.fullmatch(user):
+        return []
+    issued = os.path.join(VPN_PKI, "issued")
+    try:
+        names = os.listdir(issued)
+    except OSError:
+        return []
+    found = []
+    for filename in names:
+        if not filename.endswith(".crt"):
+            continue
+        cn = filename[:-4]
+        if cn != user and not vpn.certificate_belongs_to(cn, user):
+            continue
+        if not VPN_CERT_RE.fullmatch(cn) or vpn_certificate_status(cn) != "V":
+            continue
+        label = cn.partition("@")[2] or "Default device"
+        found.append((cn, label))
+    return sorted(found, key=lambda item: (item[1].lower(), item[0]))
+
+
+def vpn_revoked_profiles(user: str) -> list[tuple[str, str]]:
+    """List this account's revoked certificates so their status is visible but no profile is offered."""
+    if not USER_RE.fullmatch(user):
+        return []
+    issued = os.path.join(VPN_PKI, "issued")
+    try:
+        names = os.listdir(issued)
+    except OSError:
+        return []
+    found = []
+    for filename in names:
+        if not filename.endswith(".crt"):
+            continue
+        cn = filename[:-4]
+        if (cn != user and not vpn.certificate_belongs_to(cn, user)) or not VPN_CERT_RE.fullmatch(cn):
+            continue
+        if vpn_certificate_status(cn) == "R":
+            found.append((cn, cn.partition("@")[2] or "Default device"))
+    return sorted(found, key=lambda item: (item[1].lower(), item[0]))
+
+
+def make_vpn_profile(user: str, cn: str) -> tuple[bytes, str] | None:
+    """Build the same inline profile as vpn-new-client.sh, after checking certificate ownership and all file names."""
+    if not USER_RE.fullmatch(user) or not (cn == user or vpn.certificate_belongs_to(cn, user)):
+        return None
+    if not VPN_CERT_RE.fullmatch(cn) or vpn_certificate_status(cn) != "V":
+        return None
+    try:
+        cert = read_vpn_file(os.path.join(VPN_PKI, "issued", cn + ".crt"))
+        key = read_vpn_file(os.path.join(VPN_PKI, "private", cn + ".key"))
+        ca = read_vpn_file(os.path.join(VPN_PKI, "ca.crt"))
+        tls_crypt = read_vpn_file(os.path.join(VPN_PKI, "ta.key"))
+        parsed = x509.load_pem_x509_certificate(cert)
+        cert_cn = parsed.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if len(cert_cn) != 1 or cert_cn[0].value != cn:
+            return None
+        host = grants.vpn_settings()["public_host"]
+        if not host or not re.fullmatch(r"[A-Za-z0-9.:_-]{1,253}", host):
+            return None
+        rendered_cert = parsed.public_bytes(serialization.Encoding.PEM)
+    except (OSError, ValueError):
+        return None
+    # The server uses the username to match the certificate to its enrolled account. The
+    # password is deliberately a placeholder: QR phone approval is the login check.
+    profile = (b"client\ndev tun\nproto udp\nremote " + host.encode("ascii") + b" 1194\n"
+               b"remote-cert-tls server\n<auth-user-pass>\n" + user.encode("ascii") + b"\nthessley-qr-login\n</auth-user-pass>\n"
+               b"auth-nocache\n"
+               b"data-ciphers AES-256-GCM:CHACHA20-POLY1305\n<ca>\n" + ca.rstrip() + b"\n</ca>\n<cert>\n"
+               + rendered_cert.rstrip() + b"\n</cert>\n<key>\n" + key.rstrip() + b"\n</key>\n<tls-crypt>\n"
+               + tls_crypt.rstrip() + b"\n</tls-crypt>\n")
+    filename = user + ("-" + cn.partition("@")[2] if "@" in cn else "") + ".ovpn"
+    return profile, filename
+
+
+def vpn_available() -> bool:
+    """Whether this host has the enabled Thessley VPN approval service and a usable OpenVPN PKI."""
+    settings = grants.vpn_settings()
+    host = settings.get("public_host", "")
+    required_files = (
+        "/etc/openvpn/server/thessley.conf",
+        "/etc/systemd/system/thessley-pam-vpn.service",
+        os.path.join(VPN_EASYRSA, "easyrsa"),
+        os.path.join(VPN_PKI, "ca.crt"),
+        os.path.join(VPN_PKI, "ta.key"),
+    )
+    required_dirs = (os.path.join(VPN_PKI, "issued"), os.path.join(VPN_PKI, "private"))
+    return (settings["enabled"] is True and bool(host) and bool(re.fullmatch(r"[A-Za-z0-9.:_-]{1,253}", host))
+            and all(os.path.isfile(path) for path in required_files)
+            and all(os.path.isdir(path) for path in required_dirs))
+
+
+def vpn_revocation_available() -> bool:
+    """Require server-side CRL enforcement and the root-only socket for disconnecting the selected client."""
+    if not vpn_available():
+        return False
+    try:
+        with open(VPN_SERVER_CONFIG, encoding="utf-8") as stream:
+            directives = [shlex.split(line, comments=True) for line in stream]
+        dirs = [os.stat(path).st_mode for path in (VPN_EASYRSA, VPN_PKI)]
+        crl_mode = os.stat(VPN_CRL).st_mode
+    except (OSError, UnicodeError, ValueError):
+        return False
+    has_crl = any(row == ["crl-verify", VPN_CRL] for row in directives)
+    has_management = (any(row == ["management", VPN_MANAGEMENT_SOCKET, "unix"] for row in directives)
+                      and any(row == ["management-client-user", "root"] for row in directives))
+    return (has_crl and has_management and stat.S_ISREG(crl_mode) and bool(crl_mode & stat.S_IROTH)
+            and all(mode & stat.S_IXOTH for mode in dirs))
+
+
+def disconnect_vpn_certificate(cn: str) -> str | None:
+    """Disconnect only currently connected instances for a certificate through OpenVPN's root-only management socket."""
+    if not VPN_CERT_RE.fullmatch(cn):
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(4)
+            conn.connect(VPN_MANAGEMENT_SOCKET)
+            stream = conn.makefile("r", encoding="utf-8", newline="")
+            conn.sendall(b"status 3\n")
+            lines = []
+            while len(lines) < 4096:
+                line = stream.readline()
+                if not line:
+                    return None
+                lines.append(line)
+                if line.strip() == "END":
+                    break
+            if not lines or lines[-1].strip() != "END":
+                return None
+            client_ids = []
+            for row in csv.reader(io.StringIO("".join(lines))):
+                if len(row) > 10 and row[0] == "CLIENT_LIST" and row[1] == cn and row[10].isdigit():
+                    client_ids.append(row[10])
+            if not client_ids:
+                return "offline"
+            for client_id in client_ids:
+                conn.sendall(f"client-kill {client_id}\n".encode("ascii"))
+                while True:
+                    line = stream.readline()
+                    if not line or line.startswith("ERROR:"):
+                        return None
+                    if line.startswith("SUCCESS:"):
+                        break
+            return "disconnected"
+    except (OSError, UnicodeError, TimeoutError):
+        return None
+
+
+def revoke_vpn_certificate(user: str, cn: str) -> tuple[str, str] | str:
+    """Revoke one owned client certificate, refresh the enforced CRL, then disconnect only that client."""
+    if not vpn_revocation_available():
+        return "Certificate revocation is not configured on this VPN server. No certificate was changed."
+    if not USER_RE.fullmatch(user) or not VPN_CERT_RE.fullmatch(cn):
+        return "That VPN certificate is invalid. No certificate was changed."
+    if cn != user and not vpn.certificate_belongs_to(cn, user):
+        return "That VPN certificate does not belong to this account. No certificate was changed."
+    with VPN_EASYRSA_LOCK:
+        if vpn_certificate_status(cn) != "V":
+            return "That VPN certificate is not active. No certificate was changed."
+        try:
+            serial = x509.load_pem_x509_certificate(read_vpn_file(os.path.join(VPN_PKI, "issued", cn + ".crt"))).serial_number
+        except (OSError, ValueError):
+            return "The VPN certificate could not be read. No certificate was changed."
+        env = os.environ.copy()
+        env.update({"EASYRSA_BATCH": "1", "EASYRSA_CRL_DAYS": "3650"})
+        for command in (("revoke", cn), ("gen-crl",)):
+            try:
+                result = subprocess.run(["./easyrsa", *command], cwd=VPN_EASYRSA, env=env,
+                                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                        timeout=90, check=False, close_fds=True)
+            except (OSError, subprocess.SubprocessError) as exc:
+                syslog_info(f"web VPN revocation failed for {cn}: {exc!r}")
+                return "The VPN certificate could not be revoked completely. Ask an administrator to check the server."
+            if result.returncode != 0:
+                syslog_info(f"web VPN revocation command failed for {cn}: {result.stderr[-800:].strip()}")
+                return "The VPN certificate could not be revoked completely. Ask an administrator to check the server."
+        try:
+            crl = x509.load_pem_x509_crl(read_vpn_file(VPN_CRL))
+            if vpn_certificate_status(cn) != "R" or not any(item.serial_number == serial for item in crl):
+                return "The VPN certificate was marked revoked, but the CRL update did not verify. Contact an administrator."
+            os.chmod(VPN_CRL, 0o644)
+        except (OSError, ValueError):
+            return "The VPN certificate was marked revoked, but the CRL could not be verified. Contact an administrator."
+        disconnected = disconnect_vpn_certificate(cn)
+        syslog_info(f"web revoked VPN certificate {cn} for {user}; active connection state: {disconnected or 'unknown'}")
+        return cn, disconnected or "disconnect-failed"
+
+
+def create_vpn_client_profile(user: str, device: str) -> tuple[bytes, str] | str:
+    """Issue one account@device certificate and return its inline profile for the approved one-time download."""
+    if not vpn_available():
+        return "The VPN is not available on this computer. No VPN key was created."
+    if not USER_RE.fullmatch(user) or not VPN_DEVICE_RE.fullmatch(device):
+        return "The account or device name is invalid. No VPN key was created."
+    try:
+        pwd.getpwnam(user)
+    except KeyError:
+        return "That account does not exist on this computer. No VPN key was created."
+    host = grants.vpn_settings().get("public_host", "")
+    if not host or not re.fullmatch(r"[A-Za-z0-9.:_-]{1,253}", host):
+        return "The VPN public host is not configured. No VPN key was created."
+    if not os.path.isfile(os.path.join(VPN_EASYRSA, "easyrsa")) or not os.path.isdir(os.path.join(VPN_PKI, "issued")):
+        return "The VPN certificate authority is unavailable. No VPN key was created."
+
+    cn = user + "@" + device
+    cert_path = os.path.join(VPN_PKI, "issued", cn + ".crt")
+    key_path = os.path.join(VPN_PKI, "private", cn + ".key")
+    with VPN_EASYRSA_LOCK:
+        if os.path.lexists(cert_path) or os.path.lexists(key_path):
+            return "That device name already has a VPN key. Choose a different name."
+        env = os.environ.copy()
+        env.update({"EASYRSA_BATCH": "1", "EASYRSA_ALGO": "ec", "EASYRSA_CURVE": "prime256v1",
+                    "EASYRSA_CERT_EXPIRE": "825"})
+        try:
+            result = subprocess.run(["./easyrsa", "build-client-full", cn, "nopass"], cwd=VPN_EASYRSA,
+                                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=90, check=False, close_fds=True)
+        except (OSError, subprocess.SubprocessError):
+            return "The VPN certificate could not be created. No profile was downloaded. Check the server logs."
+        if result.returncode != 0:
+            return "The VPN certificate could not be created. No profile was downloaded. Check the server logs."
+        package = make_vpn_profile(user, cn)
+        if package is None:
+            return "The VPN key was created, but its profile could not be prepared. Ask an administrator to check the VPN setup."
+        return package
 
 
 PASS_NAMES = {"sshd": "ssh login", "sudo": "sudo", "gdm-thessley": "screen login", "gdm-password": "screen login", "openvpn": "VPN login"}
@@ -935,6 +1319,66 @@ def admin_page(viewer: Session, flash: str) -> str:
                 f'<button name="value" value="{"off" if state else "on"}">Switch {"off" if state else "on"}</button></form></div>')
 
     ssh_any_ip = grants.grace_any_ip("sshd")
+    qr_group = ssh_qr_group_members()
+    account_rows = []
+    for username in interactive_accounts():
+        try:
+            devices = store.devices(username)
+            active_count = sum(not d.get("disabled") for d in devices)
+        except (OSError, KeyError, ValueError):
+            devices, active_count = [], 0
+        phone_state = (f"{active_count} active phone{'s' if active_count != 1 else ''}"
+                       if active_count else "No active phone · first enrollment needed")
+        ssh_state = ("SSH QR policy applies" if username in qr_group else "Not in the thessley-ssh group")
+        ssh_controls = ""
+        if username in qr_group:
+            mode = grants.ssh_user_login_mode(username)
+            policy = grants.ssh_user_login_policy(username)
+            ssh_controls = (
+                f'<form method="post" action="/admin/set" class="row ssh-user-policy-form">{hidden}'
+                '<input type="hidden" name="name" value="ssh_user_policy">'
+                f'<input type="hidden" name="user" value="{esc(username)}">'
+                f'<label><input type="checkbox" name="inherit" value="on"{" checked" if mode == "inherit" else ""}> Use the computer-wide policy</label>'
+                '<p class="dim">Change any path checkbox below to save a per-user policy; this automatically turns off the computer-wide option.</p>'
+                '<div class="ssh-policy-options">'
+                f'<label><input type="checkbox" name="qr_only" value="on"{" checked" if policy["qr_only"] else ""}> <span>QR-only login</span></label>'
+                f'<label><input type="checkbox" name="key_qr" value="on"{" checked" if policy["key_qr"] else ""}> <span>SSH key + QR approval</span></label>'
+                f'<label><input type="checkbox" name="key_password" value="on"{" checked" if policy["key_password"] else ""}> <span>SSH key + account password</span></label>'
+                f'<label><input type="checkbox" name="blocked" value="on"{" checked" if policy["blocked"] else ""}> <span>Block SSH for this account</span></label>'
+                '</div>'
+                f'<button>Save SSH access for {esc(username)}</button></form>')
+        else:
+            ssh_controls = ('<p class="dim">This account is outside <span class="mono">thessley-ssh</span>, '
+                            'so its SSH login does not pass through these per-user Thessley controls.</p>')
+        account_rows.append(
+            f'<div class="card"><strong>{esc(username)}</strong>'
+            f'<div class="dim">SSH: {esc(ssh_state)}</div><div class="dim">Phone: {esc(phone_state)}</div>'
+            + ssh_controls +
+            f'<div class="row"><a class="btn small" href="/keys?user={esc(username)}">Manage devices / enroll</a></div></div>')
+    users_section = (
+        '<section class="admin-users"><h2>Users and first enrollment</h2>'
+        '<p class="dim">Choose an account to review its enrolled phones or add its first one. On the account page, select '
+        '<strong>Add a device</strong>, scan the QR or open the link, then compare and confirm the two codes. '
+        'The administrator signed in here must approve the change on their own phone.</p>'
+        '<p class="dim">The SSH QR policy is currently scoped to members of <span class="mono">thessley-ssh</span>. '
+        'Per-user settings override the computer-wide SSH policy for group members. “Block” refuses SSH through the Thessley PAM path. '
+        'Explicit SSH server exceptions may take precedence. QR-only requires sshd to permit keyboard-interactive login without a public key; '
+        'if sshd requires <span class="mono">publickey,keyboard-interactive:pam</span>, use SSH key + QR instead.</p>'
+        + ("".join(account_rows) or '<div class="card dim">No interactive accounts found.</div>')
+        + '</section>'
+        '<script nonce="{NONCE}">'
+        'document.querySelectorAll(".ssh-user-policy-form").forEach(function(form){'
+        'var inherit=form.querySelector("[name=inherit]");'
+        'var blocked=form.querySelector("[name=blocked]");'
+        'var paths=form.querySelectorAll("[name=qr_only],[name=key_qr],[name=key_password]");'
+        'paths.forEach(function(box){box.addEventListener("change",function(){'
+        'inherit.checked=false;if(box.checked)blocked.checked=false;'
+        '});});'
+        'blocked.addEventListener("change",function(){inherit.checked=false;'
+        'if(blocked.checked)paths.forEach(function(box){box.checked=false;});'
+        '});'
+        '});'
+        '</script>')
     ssh_policy = grants.ssh_login_policy()
     ssh_policy = (f'<div class="card"><strong>SSH login policy</strong>'
                   '<div class="dim">Applies only to accounts in the thessley-ssh group. '
@@ -948,10 +1392,10 @@ def admin_page(viewer: Session, flash: str) -> str:
                   '</div>'
                   '<button>Save SSH policy</button></form>'
                   '<div class="dim"><p>Each checked box enables a complete alternative login path (OR). A login only needs to complete one selected path.</p>'
-                  '<ul><li><strong>QR-only:</strong> no SSH key is needed, but every login needs fresh phone approval. Saved approval passes are ignored.</li>'
+                  '<ul><li><strong>QR-only:</strong> no SSH key or account password is needed. A fresh phone approval starts the configured SSH pass; until it expires, eligible logins from the configured IP scope do not ask again. Set the pass to 0 to ask every time.</li>'
                   '<li><strong>SSH key + QR:</strong> provide an SSH key, then approve on the phone. The configured approval pass may apply.</li>'
                   '<li><strong>SSH key + password:</strong> provide an SSH key and the account password. This route always requires a key.</li></ul>'
-                  '<p><strong>Examples:</strong> QR-only by itself permits only fresh QR logins. SSH key + QR together with SSH key + password tries phone approval first; '
+                  '<p><strong>Examples:</strong> QR-only permits keyless QR logins and then uses the configured pass duration and IP scope. SSH key + QR together with SSH key + password tries phone approval first; '
                   'the password route can recover if no phone is enrolled, approval is denied, or it times out. QR-only together with SSH key + password '
                   'permits keyless QR logins or key + password logins.</p></div></div>')
     grace = (f'<div class="card"><strong>How long one approval counts for ssh</strong>: {sshd_grace:g} h'
@@ -995,7 +1439,7 @@ def admin_page(viewer: Session, flash: str) -> str:
                '<button>Save recovery behavior</button></form></div>')
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
-            + ssh_policy + failure + limits + localhost_setting + journal_info + grace
+            + users_section + ssh_policy + failure + limits + localhost_setting + journal_info + grace
             + toggle("ssh_any_ip", "SSH passes from any client IP", ssh_any_ip,
                      "Cloud hosts can allow an approved SSH pass from changing client IPs. The pass still expires normally.")
             + toggle("self_enroll", "Users may add their own device", grants.self_enroll_allowed(),
@@ -1120,7 +1564,7 @@ def make_handler(app: WebApp):
                 return self.html(200, heading, wait_page(f, "{NONCE}", s, heading, note), s)
             m = re.fullmatch(r"/status/([0-9a-f]{32})", route)
             if m:
-                return self.status(m.group(1), s)
+                return self.status(m.group(1), s, query.get("qr") == "1")
             m = re.fullmatch(r"/qr/([0-9a-f]{32})\.svg", route)
             if m:
                 f = self.flow_for(m.group(1), s)
@@ -1140,6 +1584,19 @@ def make_handler(app: WebApp):
                     return self.html(404, "Not found", flash_html("That request is no longer here."), s)
                 return self.html(200, "Add a device", wait_page(f, "{NONCE}", s, "Add a device",
                                  "Scan the code with the new device's Thessley Passkey app, or open the link on the new app."), s)
+            m = re.fullmatch(r"/keys/vpn-profile/([A-Za-z0-9_-]{40,50})", route)
+            if m:
+                s = self.need_session()
+                if s is None:
+                    return
+                if not vpn_available():
+                    return self.html(404, "Not found", flash_html("The VPN is not available on this computer."), s)
+                package = app.take_vpn_download(m.group(1), s.user)
+                if package is None:
+                    return self.html(404, "Not found", flash_html("This approved download link is expired or already used."), s)
+                body, filename = package
+                return self.send(200, body, "application/x-openvpn-profile; charset=utf-8",
+                                 [("Content-Disposition", f'attachment; filename="{filename}"')])
             if route == "/keys":
                 s = self.need_session()
                 if s is None:
@@ -1148,7 +1605,7 @@ def make_handler(app: WebApp):
                 if target is None:
                     return self.html(403, "Not allowed", flash_html("You can only see your own keys."), s)
                 flash, s.flash = s.flash, ""
-                users = store.all_users() if is_admin(s.user) else []
+                users = interactive_accounts() if is_admin(s.user) else []
                 usage = app.key_usage()
                 return self.html(200, "Your keys", keys_page(target, s, flash, is_admin(s.user), users,
                                                               lambda d: app.key_details(target, d, usage)), s)
@@ -1200,6 +1657,80 @@ def make_handler(app: WebApp):
                 f.answer = data.get("answer") == "yes"
                 f.answered.set()
                 return self.redirect(f"/enroll/{f.id}")
+            if route == "/keys/vpn-revoke":
+                if not vpn_available() or not vpn_revocation_available():
+                    return self.html(404, "Not found", flash_html("VPN certificate revocation is not available on this computer."), s)
+                target = app.target(s, data.get("user"))
+                if target is None:
+                    return self.html(403, "Not allowed", flash_html("You can only revoke certificates for your account."), s)
+                certificate = data.get("certificate", "")
+                if certificate not in {cn for cn, _label in vpn_client_profiles(target)}:
+                    return self.html(404, "Not found", flash_html("That active VPN certificate is unavailable."), s)
+
+                def revoke_certificate():
+                    result = revoke_vpn_certificate(target, certificate)
+                    if isinstance(result, str):
+                        return "/keys", result
+                    cn, connection_state = result
+                    device = cn.partition("@")[2] or "Default device"
+                    if connection_state == "disconnected":
+                        message = f"Revoked the certificate for {device} and disconnected its active VPN session."
+                    elif connection_state == "offline":
+                        message = f"Revoked the certificate for {device}. It had no active VPN session."
+                    else:
+                        message = (f"Revoked the certificate for {device}, but could not confirm whether its current VPN session "
+                                   "was disconnected. Disconnect that device manually if it is still online.")
+                    return "/keys", message
+
+                return self.start_change(s, f"revoking VPN certificate {certificate} for {target}", revoke_certificate,
+                                        SERVICE_VPN_REVOKE)
+            if route == "/keys/vpn-create":
+                if not vpn_available():
+                    return self.html(404, "Not found", flash_html("The VPN is not available on this computer."), s)
+                target = app.target(s, data.get("user"))
+                if target is None:
+                    return self.html(403, "Not allowed", flash_html("You can only create VPN profiles for your account."), s)
+                device = (data.get("device") or "").strip()
+                if not VPN_DEVICE_RE.fullmatch(device):
+                    return self.html(400, "Invalid device name", flash_html("Use 1 to 32 letters, digits, dots, underscores or hyphens."), s)
+                certificate = target + "@" + device
+                if any(cn == certificate for cn, _label in vpn_client_profiles(target)):
+                    return self.html(409, "Device already exists", flash_html("That device name already has a VPN key. Choose a different name."), s)
+
+                def create_and_download():
+                    result = create_vpn_client_profile(target, device)
+                    if isinstance(result, str):
+                        return "/keys", result
+                    body, filename = result
+                    token = app.issue_vpn_download(s.user, body, filename)
+                    if token is None:
+                        return "/keys", "The VPN key was created, but its download could not be queued. Use its profile card to request a fresh approved download."
+                    return f"/keys/vpn-profile/{token}", "Phone approved; the new VPN key profile download is starting."
+
+                return self.start_change(s, f"creating a VPN key for {target} on {device}", create_and_download,
+                                        SERVICE_VPN_DOWNLOAD)
+            if route == "/keys/vpn-profile":
+                if not vpn_available():
+                    return self.html(404, "Not found", flash_html("The VPN is not available on this computer."), s)
+                target = app.target(s, data.get("user"))
+                if target is None:
+                    return self.html(403, "Not allowed", flash_html("You can only download profiles for your account."), s)
+                certificate = data.get("certificate", "")
+                if certificate not in {cn for cn, _label in vpn_client_profiles(target)}:
+                    return self.html(404, "Not found", flash_html("That VPN profile is unavailable."), s)
+
+                def prepare_download():
+                    result = make_vpn_profile(target, certificate)
+                    if result is None:
+                        return "/keys", "That VPN profile is no longer available."
+                    body, filename = result
+                    token = app.issue_vpn_download(s.user, body, filename)
+                    if token is None:
+                        return "/keys", "Too many approved downloads are waiting. Try again in a moment."
+                    return f"/keys/vpn-profile/{token}", "Phone approved; the VPN profile download is starting."
+
+                return self.start_change(s, f"downloading a VPN profile for {target}", prepare_download,
+                                        SERVICE_VPN_DOWNLOAD)
             if route.startswith("/keys/"):
                 return self.keys_action(route[len("/keys/"):], data, s)
             if route == "/passes/end":
@@ -1224,6 +1755,8 @@ def make_handler(app: WebApp):
             if action == "add":
                 return self.start_change(s, f"adding a device for {target}", app.change_begin_enroll(target, s.user), SERVICE_DEVICE)
             if action == "addvpn":
+                if not vpn_available():
+                    return self.html(404, "Not found", flash_html("The VPN is not available on this computer."), s)
                 host = grants.vpn_settings()["public_host"]
                 if not host:
                     return self.html(400, "Not possible", flash_html("Set the VPN's public host first: sudo thessley-pam vpn public-host NAME"), s)
@@ -1271,6 +1804,22 @@ def make_handler(app: WebApp):
                     return self.html(400, "Not valid", flash_html("Select at least one SSH login path."), s)
                 self.start_change(s, "changing the SSH login policy",
                                   app.change_ssh_policy(qr_only, key_qr, key_password))
+                return
+            if name == "ssh_user_policy":
+                username = (data.get("user") or "").strip()
+                inherit = data.get("inherit") == "on"
+                qr_only = data.get("qr_only") == "on"
+                key_qr = data.get("key_qr") == "on"
+                key_password = data.get("key_password") == "on"
+                blocked = data.get("blocked") == "on"
+                if username not in interactive_accounts() or username not in ssh_qr_group_members():
+                    return self.html(400, "Not valid", flash_html("Choose an account in the thessley-ssh group."), s)
+                if not inherit and not blocked and not (qr_only or key_qr or key_password):
+                    return self.html(400, "Not valid", flash_html("Select an SSH login path, Use the computer-wide policy, or Block SSH."), s)
+                if blocked and (qr_only or key_qr or key_password):
+                    return self.html(400, "Not valid", flash_html("Block SSH cannot be combined with login paths."), s)
+                self.start_change(s, f"changing SSH access for {username}",
+                                  app.change_ssh_user_policy(username, inherit, qr_only, key_qr, key_password, blocked))
                 return
             if name == "grace":
                 try:
@@ -1321,12 +1870,17 @@ def make_handler(app: WebApp):
                 return "Something went wrong on this computer, so nothing was added. Check the device list before trying again."
             return "The new device was not added."
 
-        def status(self, fid: str, s: Session | None) -> None:
+        def status(self, fid: str, s: Session | None, include_qr: bool = False) -> None:
             f = self.flow_for(fid, s)
             if f is None:
                 return self.json({"state": "gone", "message": "This request is no longer here. Start again.", "bad": True})
             extra = None
             out = {"state": f.state, "link": f.link, "code": f.code, "message": "", "bad": False}
+            if include_qr and f.link:
+                with f.lock:
+                    if not f.qr_svg_data:
+                        f.qr_svg_data = base64.b64encode(qr_svg(f.link)).decode("ascii")
+                    out["qr_svg"] = f.qr_svg_data
             if f.kind == "login" and f.state == "approved":
                 session = app.new_session(f.user)
                 f.state = "done"

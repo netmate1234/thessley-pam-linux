@@ -23,6 +23,8 @@ of the convenience; keep the window short and end passes (end-pass) when in doub
 import grp
 import json
 import os
+import pwd
+import re
 import tempfile
 import time
 
@@ -69,12 +71,17 @@ def grace_hours(service: str) -> float:
     return min(max(hours, 0.0), MAX_HOURS)
 
 
-def requires_phone(service: str) -> bool:
+def requires_phone(service: str, username: str | None = None) -> bool:
     """True if a user with no enrolled (active) phone is refused for this service instead of passing through.
     Off by default, as it is for sudo (so nobody who never opted in is locked out); on for ssh, where the phone is
     the only second step and a missing phone would silently mean no second step at all."""
     if service == "sshd":
-        policy = ssh_login_policy()
+        mode = ssh_user_login_mode(username) if username else "inherit"
+        if mode == "blocked":
+            return True
+        policy = _SSH_LOGIN_POLICIES.get(mode)
+        if policy is None:
+            policy = ssh_login_policy()
         return policy["qr_only"] or policy["key_qr"]
     try:
         return service in list(_load_config().get("require", []))
@@ -111,6 +118,9 @@ SSH_LOGIN_MODES = {
     "qr": "QR-only (phone approval; no SSH key or account password)",
 }
 SSH_LOGIN_MODE_PATH = os.path.join(store.BASE, "ssh-login-mode")
+SSH_USER_MODE_DIR = os.path.join(store.BASE, "ssh-users")
+
+
 def _ssh_policy_failure_path() -> str:
     return os.path.join(store.BASE, "ssh-policy-failure")
 
@@ -140,6 +150,100 @@ def set_ssh_policy_failure_mode(mode: str) -> None:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+
+
+def ssh_user_login_mode(username: str) -> str:
+    """Return a per-account SSH override, or inherit when no valid override exists."""
+    if not re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", username or ""):
+        return "inherit"
+    try:
+        pwd.getpwnam(username)
+        with open(os.path.join(SSH_USER_MODE_DIR, username), encoding="ascii") as f:
+            mode = f.read(32).strip()
+        return mode if mode == "blocked" or mode in _SSH_LOGIN_POLICIES else "inherit"
+    except (KeyError, OSError):
+        return "inherit"
+
+
+def set_ssh_user_login_mode(username: str, mode: str) -> None:
+    """Atomically save or remove one user's policy override; backups retain the prior value."""
+    if not re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", username or ""):
+        raise ValueError("Invalid account name.")
+    try:
+        pwd.getpwnam(username)
+    except KeyError as exc:
+        raise ValueError("That account does not exist.") from exc
+    if mode in SSH_LOGIN_MODES:
+        policy = _SSH_LOGIN_POLICIES[mode]
+        mode = ("O" if policy["qr_only"] else "") + ("K" if policy["key_qr"] else "") + ("P" if policy["key_password"] else "")
+    if mode not in {"inherit", "blocked", *_SSH_LOGIN_POLICIES.keys()}:
+        raise ValueError("Choose a supported per-user SSH policy.")
+    os.makedirs(SSH_USER_MODE_DIR, mode=0o700, exist_ok=True)
+    os.chmod(SSH_USER_MODE_DIR, 0o700)
+    path = os.path.join(SSH_USER_MODE_DIR, username)
+    try:
+        with open(path, "rb") as previous:
+            old_value = previous.read(64)
+        backup = path + ".bak"
+        backup_fd, backup_tmp = tempfile.mkstemp(dir=SSH_USER_MODE_DIR, prefix=".tmp.ssh-user.bak.")
+        try:
+            with os.fdopen(backup_fd, "wb") as f:
+                f.write(old_value)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(backup_tmp, 0o600)
+            os.replace(backup_tmp, backup)
+        except BaseException:
+            if os.path.exists(backup_tmp):
+                os.unlink(backup_tmp)
+            raise
+    except FileNotFoundError:
+        pass
+    if mode == "inherit":
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        return
+    fd, tmp = tempfile.mkstemp(dir=SSH_USER_MODE_DIR, prefix=".tmp.ssh-user.")
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as f:
+            f.write(mode + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def ssh_user_login_policy(username: str) -> dict[str, bool]:
+    """Return a user's effective SSH login paths, including a blocked marker."""
+    mode = ssh_user_login_mode(username)
+    if mode == "blocked":
+        return {"qr_only": False, "key_qr": False, "key_password": False, "blocked": True}
+    if mode == "inherit":
+        policy = ssh_login_policy()
+    else:
+        policy = dict(_SSH_LOGIN_POLICIES.get(mode, SSH_LOGIN_POLICY_DEFAULT))
+    return {**policy, "blocked": False}
+
+
+def set_ssh_user_login_paths(username: str, inherit: bool, qr_only: bool, key_qr: bool,
+                             key_password: bool, blocked: bool) -> None:
+    if inherit:
+        set_ssh_user_login_mode(username, "inherit")
+    elif blocked:
+        if qr_only or key_qr or key_password:
+            raise ValueError("A blocked account cannot also have an allowed login path.")
+        set_ssh_user_login_mode(username, "blocked")
+    elif qr_only or key_qr or key_password:
+        mode = ("O" if qr_only else "") + ("K" if key_qr else "") + ("P" if key_password else "")
+        set_ssh_user_login_mode(username, mode)
+    else:
+        raise ValueError("Select at least one login path, select Block SSH, or choose Use global policy.")
 
 
 def ssh_login_policy() -> dict[str, bool]:
@@ -381,6 +485,8 @@ def _ensure_dir() -> None:
         os.chown(RUN, 0, grp.getgrnam("nogroup").gr_gid)
     os.chmod(RUN, 0o750)
     os.makedirs(GRANTS, mode=0o700, exist_ok=True)
+    # RUN is shared with the phone approval sockets. Keep its systemd-managed
+    # traversal permissions; protect pass files in the private GRANTS dir.
     os.chmod(GRANTS, 0o700)
 
 
