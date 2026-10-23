@@ -41,7 +41,7 @@ address: `sudo thessley-pam web listen auto`. Every page says which computer it 
 - **Fresh approval for every change.** Renaming, switching off or on, removing, adding, and every admin setting first ask your
   phone ("Approve a change to your keys", or "Approve adding a device"). A stolen browser session can look but not change.
 - **Administrators** (members of `sudo`, `admin` or `wheel`, and root) can pick any account and change the settings: how
-  long one approval counts for ssh, whether SSH passes work from any client IP, phone required for ssh, users adding their own
+  long one approval counts for ssh, whether Thessley-controlled SSH users can connect from all IPs or selected local networks, VPN networks and chosen IPs, phone required for ssh, users adding their own
   phone, text links in approvals. Their own
   phone approves each change.
 - Administrators can also set the web request concurrency limit and the maximum number of remembered sign-in IP buckets.

@@ -1,8 +1,14 @@
 # ssh: key + phone once, then the key alone for N hours
 
 For members of one group, `ssh` needs the ssh key **and** a phone approval. After an approval, the same user logging
-in from the same address needs only the key for the next N hours (4 by default in these notes). On cloud hosts whose
-SSH clients may come from changing addresses, configure the pass to apply from any client IP.
+in from the same address needs only the key for the next N hours (4 by default in these notes).
+
+The default **Allowed source networks for Thessley SSH logins** is detected local networks plus detected VPN
+networks. Administrators can change this in `/admin` to all IPs, selected source types, and/or a chosen list of
+comma-separated IP addresses/CIDR ranges. All IPs is exclusive. Local and VPN ranges are discovered from active
+network interfaces; on a computer that does not host the VPN, add its client subnet to Chosen list. A source outside the selected networks is refused before phone
+approval. The four-hour pass is tied to its original client IP by default. Accounts outside `thessley-ssh` are not
+covered by this source policy; block those accounts in the per-user SSH controls if needed.
 
 ## What a "pass" is
 

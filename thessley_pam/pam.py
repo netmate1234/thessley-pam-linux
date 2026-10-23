@@ -77,6 +77,11 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
     username = env.get("PAM_USER", "")
     service = env.get("PAM_SERVICE", "")
     tty = env.get("PAM_TTY", "") or "-"
+    rhost = env.get("PAM_RHOST", "") or grants.LOCAL
+    if service == "sshd" and not grants.ssh_client_ip_allowed(rhost):
+        say("Thessley Passkey: SSH from this client IP is not allowed by the administrator.")
+        _log(f"SSH client IP policy refused {username} ({service})", warn=True)
+        return REFUSED
     try:
         devices = store.active_devices(username)
     except KeyError:
@@ -95,7 +100,6 @@ def run(env: dict, login: bool = False, marker: bool = False, say=None, wait: fl
         return REFUSED
 
     # A configured pass needs no new approval until it runs out. Never for the login screen.
-    rhost = env.get("PAM_RHOST", "") or grants.LOCAL
     # A QR-only policy controls which authentication path is allowed, not how long a
     # successful phone approval lasts. SSH grace still applies to QR-only logins.
     grace = 0.0 if login else grants.grace_hours(service)

@@ -21,6 +21,7 @@ of the convenience; keep the window short and end passes (end-pass) when in doub
 """
 
 import grp
+import ipaddress
 import json
 import os
 import pwd
@@ -30,7 +31,7 @@ import subprocess
 import tempfile
 import time
 
-from . import store
+from . import machine, store
 
 RUN = "/run/thessley-pam"
 GRANTS = os.path.join(RUN, "grants")
@@ -52,6 +53,125 @@ def _load_config() -> dict:
 
 
 NO_GRACE = ("openvpn", "thessley-vpn-download", "thessley-vpn-revoke")  # VPN access and certificate changes require fresh approval
+
+
+def parse_ssh_allowed_ips(value: str | list[str] | tuple[str, ...]) -> list[str]:
+    """Normalize a comma/space-separated set of SSH client IPs or CIDRs; empty means unrestricted."""
+    if isinstance(value, str):
+        entries = value.replace(",", " ").split()
+    elif isinstance(value, (list, tuple)):
+        entries = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        raise ValueError("Enter IP addresses or CIDR networks, or leave the field empty for any IP.")
+    if len(entries) > 64:
+        raise ValueError("Enter no more than 64 IP addresses or networks.")
+    result = []
+    for entry in entries:
+        try:
+            network = ipaddress.ip_network(entry, strict=False)
+        except ValueError as exc:
+            raise ValueError(f"Invalid IP address or CIDR network: {entry}") from exc
+        normalized = str(network)
+        if normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def ssh_allowed_ips() -> list[str]:
+    """Return the custom SSH source allowlist, if one is configured."""
+    config = _load_config()
+    if "ssh_allowed_ips" not in config:
+        return []
+    return parse_ssh_allowed_ips(config["ssh_allowed_ips"])
+
+
+SSH_SOURCE_MODES = ("any", "local", "vpn", "custom")
+
+
+def ssh_source_mode() -> str:
+    """Return one source mode for older callers, or 'multiple' when the checkboxes combine modes."""
+    modes = ssh_source_modes()
+    return modes[0] if len(modes) == 1 else ("multiple" if modes else "invalid")
+
+
+def ssh_source_modes() -> list[str]:
+    """Return selected source modes, migrating the earlier single-mode and custom-list settings."""
+    config = _load_config()
+    selected = config.get("ssh_source_modes")
+    if selected is not None:
+        if (not isinstance(selected, list) or not selected or any(mode not in SSH_SOURCE_MODES for mode in selected)
+                or len(selected) != len(set(selected)) or ("any" in selected and len(selected) != 1)):
+            return ["invalid"]
+        return selected
+    mode = config.get("ssh_source_mode")
+    if mode is None:
+        try:
+            return ["custom"] if ssh_allowed_ips() else ["local", "vpn"]
+        except (TypeError, ValueError):
+            return ["invalid"]
+    return [mode] if mode in SSH_SOURCE_MODES else ["invalid"]
+
+
+def ssh_source_networks(mode: str | None = None) -> list[str]:
+    """Resolve the selected source mode to the active networks it currently permits."""
+    mode = mode or ssh_source_mode()
+    if mode == "custom":
+        return ssh_allowed_ips()
+    if mode in ("local", "vpn"):
+        return machine.interface_networks(mode)
+    return []
+
+
+def ssh_client_ip_allowed(client_ip: str) -> bool:
+    """Check a Thessley-controlled SSH login's source address against the admin policy."""
+    modes = ssh_source_modes()
+    if modes == ["any"]:
+        return True
+    if not modes or any(mode not in ("local", "vpn", "custom") for mode in modes):
+        return False  # a malformed restriction must not silently become unrestricted
+    try:
+        networks = [ipaddress.ip_network(item) for mode in modes for item in ssh_source_networks(mode)]
+    except (TypeError, ValueError):
+        return False
+    if not networks:
+        return False  # a selected network class with no detected networks fails closed
+    try:
+        address = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    return any(address.version == network.version and address in network for network in networks)
+
+
+def set_ssh_allowed_ips(value: str | list[str] | tuple[str, ...]) -> None:
+    """Compatibility wrapper for callers using the earlier custom-list interface."""
+    allowed = parse_ssh_allowed_ips(value)
+    set_ssh_source_policy("custom" if allowed else "any", allowed)
+
+
+def set_ssh_source_policy(modes: str | list[str] | tuple[str, ...], addresses: str | list[str] | tuple[str, ...] = "") -> None:
+    """Save all-IP, local, VPN, and/or custom-list SSH access."""
+    if isinstance(modes, str):
+        modes = [modes]
+    if (not isinstance(modes, (list, tuple)) or not modes or any(mode not in SSH_SOURCE_MODES for mode in modes)
+            or len(modes) != len(set(modes)) or ("any" in modes and len(modes) != 1)):
+        raise ValueError("Choose All IPs alone, or one or more of local, VPN, and chosen-list access.")
+    allowed = parse_ssh_allowed_ips(addresses) if "custom" in modes else []
+    if "custom" in modes and not allowed:
+        raise ValueError("Enter at least one IP address or CIDR range for the chosen-list option.")
+    store.ensure_dirs()
+    config = _load_config()
+    if modes == ["any"]:
+        config.pop("ssh_source_modes", None)
+        config.pop("ssh_source_mode", None)
+        config.pop("ssh_allowed_ips", None)
+    else:
+        config["ssh_source_modes"] = list(modes)
+        config.pop("ssh_source_mode", None)
+    if "custom" in modes:
+        config["ssh_allowed_ips"] = allowed
+    else:
+        config.pop("ssh_allowed_ips", None)
+    _atomic_write(_config_path(), config, store.BASE)
 
 
 def grace_any_ip(service: str) -> bool:

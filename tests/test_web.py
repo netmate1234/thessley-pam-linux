@@ -527,6 +527,9 @@ class WebTest(WebBase):
         resp, body = self.b.get("/admin")
         self.assertEqual(resp.status, 200)
         self.assertIn("Settings for this computer", body)
+        self.assertIn("Allowed source networks for Thessley SSH logins", body)
+        for label in ("All IPs", "Local networks", "VPN networks", "Chosen list"):
+            self.assertIn(label, body)
         self.step_up("/admin/set", {"name": "require", "value": "on"})
         self.assertTrue(grants.requires_phone("sshd"))
         self.step_up("/admin/set", {"name": "grace", "value": "2"})
@@ -539,6 +542,20 @@ class WebTest(WebBase):
         self.assertFalse(grants.self_enroll_allowed())
         self.step_up("/admin/set", {"name": "show_link", "value": "off"})
         self.assertFalse(store.show_link())
+
+    def test_admin_can_save_a_source_ip_allowlist_for_ssh(self):
+        self.admin = True
+        self.login()
+        self.step_up("/admin/set", {"name": "ssh_source_policy", "custom": "on", "addresses": "203.0.113.7, 198.51.100.0/24"})
+        self.assertEqual(grants.ssh_allowed_ips(), ["203.0.113.7/32", "198.51.100.0/24"])
+        self.assertEqual(grants.ssh_source_mode(), "custom")
+        self.assertTrue(grants.ssh_client_ip_allowed("203.0.113.7"))
+        self.assertTrue(grants.ssh_client_ip_allowed("198.51.100.22"))
+        self.assertFalse(grants.ssh_client_ip_allowed("192.0.2.1"))
+        self.step_up("/admin/set", {"name": "ssh_source_policy", "all_ips": "on"})
+        self.assertEqual(grants.ssh_allowed_ips(), [])
+        self.assertEqual(grants.ssh_source_mode(), "any")
+        self.assertTrue(grants.ssh_client_ip_allowed("192.0.2.1"))
 
     def test_the_session_length_is_validated(self):
         self.admin = True
@@ -554,6 +571,11 @@ class WebTest(WebBase):
         self.assertEqual(self.b.post("/admin/set", {"csrf": csrf, "name": "grace", "value": "-3"})[0].status, 400)
         self.assertEqual(self.b.post("/admin/set", {"csrf": csrf, "name": "grace", "value": "abc"})[0].status, 400)
         self.assertEqual(self.b.post("/admin/set", {"csrf": csrf, "name": "require", "value": "maybe"})[0].status, 400)
+        self.assertEqual(self.b.post("/admin/set", {"csrf": csrf, "name": "ssh_source_policy", "custom": "on", "addresses": "not-an-ip"})[0].status, 400)
+        self.assertEqual(self.b.post("/admin/set", {"csrf": csrf, "name": "ssh_source_policy", "custom": "on", "addresses": ""})[0].status, 400)
+        self.assertEqual(self.b.post("/admin/set", {"csrf": csrf, "name": "ssh_source_policy"})[0].status, 400)
+        self.assertEqual(self.b.post("/admin/set", {"csrf": csrf, "name": "ssh_source_policy", "all_ips": "on", "local": "on"})[0].status, 400)
+        self.assertEqual(grants.ssh_allowed_ips(), [])
         self.assertEqual(self.b.post("/admin/set", {"csrf": csrf, "name": "rm -rf", "value": "on"})[0].status, 404)
 
     # -- output safety and the log

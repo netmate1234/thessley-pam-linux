@@ -43,6 +43,40 @@ class GrantsTest(unittest.TestCase):
         grants.set_grace("sshd", 0)
         self.assertEqual(grants.grace_hours("sshd"), 0)
 
+    def test_ssh_client_allowlist_matches_ip_and_cidr_and_can_be_cleared(self):
+        grants.set_ssh_source_policy("custom", "203.0.113.7, 198.51.100.0/24")
+        self.assertEqual(grants.ssh_allowed_ips(), ["203.0.113.7/32", "198.51.100.0/24"])
+        self.assertEqual(grants.ssh_source_mode(), "custom")
+        self.assertTrue(grants.ssh_client_ip_allowed("203.0.113.7"))
+        self.assertTrue(grants.ssh_client_ip_allowed("198.51.100.22"))
+        self.assertFalse(grants.ssh_client_ip_allowed("192.0.2.1"))
+        with self.assertRaises(ValueError):
+            grants.set_ssh_source_policy("custom", "not-an-ip")
+        grants.set_ssh_source_policy("any")
+        self.assertEqual(grants.ssh_allowed_ips(), [])
+        self.assertEqual(grants.ssh_source_mode(), "any")
+        self.assertTrue(grants.ssh_client_ip_allowed("192.0.2.1"))
+
+    def test_local_and_vpn_modes_use_the_detected_networks(self):
+        original = grants.machine.interface_networks
+        self.addCleanup(setattr, grants.machine, "interface_networks", original)
+        grants.machine.interface_networks = lambda kind: {
+            "local": ["192.168.10.0/24"], "vpn": ["10.8.0.0/24"]}[kind]
+        grants.set_ssh_source_policy("local")
+        self.assertTrue(grants.ssh_client_ip_allowed("192.168.10.12"))
+        self.assertFalse(grants.ssh_client_ip_allowed("10.8.0.12"))
+        grants.set_ssh_source_policy("vpn")
+        self.assertTrue(grants.ssh_client_ip_allowed("10.8.0.12"))
+        self.assertFalse(grants.ssh_client_ip_allowed("192.168.10.12"))
+
+    def test_an_inactive_network_does_not_cancel_other_selected_sources(self):
+        original = grants.machine.interface_networks
+        self.addCleanup(setattr, grants.machine, "interface_networks", original)
+        grants.machine.interface_networks = lambda kind: ["192.168.10.0/24"] if kind == "local" else []
+        grants.set_ssh_source_policy(["local", "vpn"])
+        self.assertTrue(grants.ssh_client_ip_allowed("192.168.10.12"))
+        self.assertFalse(grants.ssh_client_ip_allowed("10.8.0.12"))
+
     def test_grace_is_capped_and_bad_names_refused(self):
         grants.set_grace("sshd", 1000)
         self.assertEqual(grants.grace_hours("sshd"), grants.MAX_HOURS)
@@ -118,6 +152,14 @@ class PamPassTest(unittest.TestCase):
         pam.PORT = 47897
         pam.WAIT = 3
         pam._log = lambda *a, **k: None
+
+    def test_ssh_source_allowlist_refuses_an_unlisted_address_before_approval(self):
+        grants.set_ssh_allowed_ips("203.0.113.7")
+        messages = []
+        result = pam.run({"PAM_TYPE": "auth", "PAM_SERVICE": "sshd", "PAM_USER": USER,
+                          "PAM_RHOST": "192.0.2.8"}, say=messages.append)
+        self.assertEqual(result, pam.REFUSED)
+        self.assertIn("not allowed", messages[0])
         self.said = []
         pam._say = self.said.append
         self.links = []

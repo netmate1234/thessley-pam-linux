@@ -26,7 +26,7 @@ import ast
 import pathlib
 import sys
 
-for name in ("web.py", "grants.py", "pam.py"):
+for name in ("web.py", "grants.py", "pam.py", "machine.py"):
     path = pathlib.Path(sys.argv[1]) / name
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 PY
@@ -84,6 +84,7 @@ applied=1
 install -o root -g root -m 0644 "$src/thessley_pam/web.py" "$lib/thessley_pam/web.py"
 install -o root -g root -m 0644 "$src/thessley_pam/grants.py" "$lib/thessley_pam/grants.py"
 install -o root -g root -m 0644 "$src/thessley_pam/pam.py" "$lib/thessley_pam/pam.py"
+install -o root -g root -m 0644 "$src/thessley_pam/machine.py" "$lib/thessley_pam/machine.py"
 install -o root -g root -m 0644 "$tmp/pam_thessley_phone.so" "$old_module"
 find "$lib/thessley_pam" -name __pycache__ -type d -prune -exec rm -rf -- {} +
 install -d -o root -g root -m 0755 "$web_dropin_dir"

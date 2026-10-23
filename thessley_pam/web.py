@@ -285,8 +285,12 @@ class WebApp:
     def _approval_thread(self, flow: Flow, service: str, ip: str) -> None:
         flow.state = "waiting"
         try:
+            # The browser needs the approval URI to render its QR code. Terminal
+            # approvals may hide the link via the user's show-link preference,
+            # but that preference must not suppress QR generation in the web UI.
             rc = pam.run({"PAM_TYPE": "auth", "PAM_USER": flow.user, "PAM_SERVICE": service,
-                          "PAM_RHOST": ip, "PAM_TTY": "-"}, say=flow.say, wait=WEB_WAIT)
+                          "PAM_RHOST": ip, "PAM_TTY": "-", "PAM_ALWAYS_LINK": "1"},
+                         say=flow.say, wait=WEB_WAIT)
         except Exception as exc:  # strict: any trouble is a refusal
             flow.say(f"error: {exc!r}")
             rc = pam.REFUSED
@@ -419,15 +423,21 @@ class WebApp:
             return f"/enroll/{flow.id}", ""
         return run
 
-    def change_setting(self, name: str, value: str):
+    def change_setting(self, name: str, value: str, addresses: str = ""):
         def run():
             if name == "grace":
                 grants.set_grace("sshd", float(value))
                 return "/admin", f"A phone approval now lasts {float(value):g} h for ssh (0 = every login asks)."
-            if name == "ssh_any_ip":
-                scope = "any" if value == "on" else "same"
-                grants.set_grace("sshd", grants.grace_hours("sshd"), scope)
-                return "/admin", "SSH passes now apply from " + ("any client IP." if scope == "any" else "the approved client IP only.")
+            if name == "ssh_source_policy":
+                modes = value.split(",")
+                grants.set_ssh_source_policy(modes, addresses)
+                labels = {
+                    "any": "All IPs",
+                    "local": "Local networks",
+                    "vpn": "VPN networks",
+                    "custom": "Chosen list",
+                }
+                return "/admin", "Thessley SSH source policy saved: " + ", ".join(labels[mode] for mode in modes) + "."
             if name == "session":
                 grants.set_web(session_minutes=int(float(value)))
                 return "/admin", f"You are now signed out after {int(float(value))} minutes without activity (from the next sign-in)."
@@ -758,6 +768,11 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}bu
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}.row form{display:inline}
 .ssh-policy-options{display:grid;gap:8px;margin:12px 0}.ssh-policy-options label{display:flex;gap:9px;align-items:flex-start}
 .ssh-policy-options input[type=checkbox]{width:1.1rem;height:1.1rem;flex:0 0 auto;margin:.2rem 0 0}
+.ssh-source-form{display:grid;gap:8px;margin-top:10px;min-width:0}
+.ssh-source-form input[type=text]{width:100%;min-width:0;max-width:100%}
+.ssh-source-options{display:grid;gap:8px;margin:10px 0}
+.ssh-source-options label{display:flex;gap:9px;align-items:flex-start;min-width:0}
+.ssh-source-options input[type=checkbox]{width:1.1rem;height:1.1rem;flex:0 0 auto;margin:.2rem 0 0}
 .flash{border-left:4px solid var(--ok);padding:8px 12px;margin:10px 0;background:var(--card)}
 code,.mono{font-family:ui-monospace,monospace;word-break:break-all;font-size:.85rem}
 .qr{display:block;margin:12px auto;background:#fff;padding:6px;border-radius:8px;width:min(100%,520px);max-width:100%;height:auto;image-rendering:pixelated}
@@ -1327,7 +1342,45 @@ def admin_page(viewer: Session, flash: str) -> str:
                 f'<input type="hidden" name="name" value="{esc(name)}">'
                 f'<button name="value" value="{"off" if state else "on"}">Switch {"off" if state else "on"}</button></form></div>')
 
-    ssh_any_ip = grants.grace_any_ip("sshd")
+    ssh_source_modes = grants.ssh_source_modes()
+    try:
+        ssh_source_ips = grants.ssh_allowed_ips()
+        ssh_source_error = "" if "invalid" not in ssh_source_modes else "The saved SSH source policy is invalid; SSH logins fail closed until you save a valid option."
+    except (TypeError, ValueError):
+        ssh_source_ips = []
+        ssh_source_error = "The saved SSH source policy is malformed; SSH logins fail closed until you save a valid option."
+    local_networks = machine.interface_networks("local")
+    vpn_networks = machine.interface_networks("vpn")
+    if "invalid" in ssh_source_modes:
+        ssh_source_modes = ["any"]
+    ssh_source_ip_setting = (
+        '<div class="card"><strong>Allowed source networks for Thessley SSH logins</strong>'
+        + (f'<p class="bad">{esc(ssh_source_error)}</p>' if ssh_source_error else "")
+        + '<div class="dim">Check one or more source types. All IPs is exclusive. Clients outside the selected networks are refused before phone approval. '
+          'This applies to accounts using the Thessley SSH controls. The four-hour approval pass remains tied to its original client IP.</div>'
+        + f'<form method="post" action="/admin/set" class="ssh-source-form">{hidden}'
+        + '<input type="hidden" name="name" value="ssh_source_policy">'
+        + '<div class="ssh-source-options">'
+        + f'<label><input id="ssh-source-any" type="checkbox" name="all_ips" value="on" '
+          f'{"checked" if ssh_source_modes == ["any"] else ""} '
+          'onchange="if(this.checked)document.querySelectorAll(\'.ssh-source-restrict\').forEach(x=>x.checked=false)"> All IPs</label>'
+        + f'<label><input class="ssh-source-restrict" type="checkbox" name="local" value="on" '
+          f'{"checked" if "local" in ssh_source_modes else ""} '
+          'onchange="if(this.checked)document.getElementById(\'ssh-source-any\').checked=false"> Local networks</label>'
+        + f'<label><input class="ssh-source-restrict" type="checkbox" name="vpn" value="on" '
+          f'{"checked" if "vpn" in ssh_source_modes else ""} '
+          'onchange="if(this.checked)document.getElementById(\'ssh-source-any\').checked=false"> VPN networks</label>'
+        + f'<label><input id="ssh-source-custom-check" class="ssh-source-restrict" type="checkbox" name="custom" value="on" '
+          f'{"checked" if "custom" in ssh_source_modes else ""} '
+          'onchange="if(this.checked)document.getElementById(\'ssh-source-any\').checked=false"> Chosen list</label></div>'
+        + '<label for="ssh-source-custom">Allowed IP addresses or CIDR ranges for Chosen list</label>'
+        + '<div id="ssh-source-custom">'
+        + f'<input type="text" name="addresses" value="{esc(", ".join(ssh_source_ips))}" '
+          'placeholder="Example: 203.0.113.7, 198.51.100.0/24" '
+          'aria-label="Allowed SSH client IP addresses or CIDR ranges"></div>'
+        + f'<p class="dim">Detected local: {esc(", ".join(local_networks) or "none")}. '
+          f'Detected VPN: {esc(", ".join(vpn_networks) or "none active")}. A source type with no active interface currently contributes no allowed addresses; other checked types still work.</p>'
+        + '<button>Save SSH source IPs</button></form></div>')
     qr_group = ssh_qr_group_members()
     account_rows = []
     for username in interactive_accounts():
@@ -1462,8 +1515,7 @@ def admin_page(viewer: Session, flash: str) -> str:
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
             + users_section + ssh_policy + failure + limits + localhost_setting + journal_info + grace
-            + toggle("ssh_any_ip", "SSH passes from any client IP", ssh_any_ip,
-                     "Cloud hosts can allow an approved SSH pass from changing client IPs. The pass still expires normally.")
+            + ssh_source_ip_setting
             + toggle("self_enroll", "Users may add their own device", grants.self_enroll_allowed(),
                      "thessley-pam enroll-me: the first device freely, more with an approval.")
             + toggle("show_link", "Text links in approvals", store.show_link(),
@@ -1877,12 +1929,31 @@ def make_handler(app: WebApp):
             elif name == "ssh_login_mode":
                 if value not in grants.SSH_LOGIN_MODES:
                     return self.html(400, "Not valid", flash_html("Choose a supported SSH login policy."), s)
-            elif name in ("require", "self_enroll", "show_link", "ssh_any_ip", "localhost_only"):
+            elif name == "ssh_source_policy":
+                modes = []
+                if data.get("all_ips") == "on":
+                    modes = ["any"]
+                    if any(data.get(option) == "on" for option in ("local", "vpn", "custom")):
+                        return self.html(400, "Not valid", flash_html("All IPs cannot be combined with restricted source types."), s)
+                else:
+                    modes = [option for option in ("local", "vpn", "custom") if data.get(option) == "on"]
+                if not modes:
+                    return self.html(400, "Not valid", flash_html("Choose All IPs or at least one restricted source type."), s)
+                if "custom" in modes:
+                    try:
+                        allowed = grants.parse_ssh_allowed_ips(data.get("addresses") or "")
+                    except ValueError as exc:
+                        return self.html(400, "Not valid", flash_html(str(exc)), s)
+                    if not allowed:
+                        return self.html(400, "Not valid", flash_html("Enter at least one IP address or CIDR range for the chosen-list option."), s)
+                    data["addresses"] = ", ".join(allowed)
+                value = ",".join(modes)
+            elif name in ("require", "self_enroll", "show_link", "localhost_only"):
                 if value not in ("on", "off"):
                     return self.html(400, "Not valid", flash_html("Choose on or off."), s)
             else:
                 return self.html(404, "Not found", flash_html("No such setting."), s)
-            self.start_change(s, f"changing a setting ({name})", app.change_setting(name, value))
+            self.start_change(s, f"changing a setting ({name})", app.change_setting(name, value, data.get("addresses") or ""))
 
         @staticmethod
         def failure_text(f: Flow) -> str:
