@@ -29,8 +29,10 @@ chosen device authentication; the computer only ever holds the matching public k
 | Admin web page | sign in with a phone approval, manage your keys, settings and activity in a browser | [docs/WEB.md](docs/WEB.md) |
 
 Install order: `sudo apt install qrencode python3-cryptography python3-asn1crypto`, then `sudo ./install.sh`, then whatever you want from
-the table. `install.sh` copies the code into root-owned places (`/usr/local/lib/thessley-pam`) and never edits
-`/etc/pam.d`: the helper runs as root, so it must not live in a directory anyone else can write.
+the table. The installer validates and stages its Python files before changing the installation, saves the previous code and
+systemd service state under `/var/backups/thessley-pam-install-*`, and restores them if service activation or the TCP 47810
+health check fails. It never edits `/etc/pam.d` or SSH policy: the helper runs as root, so it must not live in a directory
+anyone else can write. Keep the printed backup path until the installation has been verified.
 
 ### `sudo`
 
