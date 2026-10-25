@@ -155,6 +155,28 @@ install -o root -g root -m 0755 "$src/ssh-config-rollback.sh" "$rollback_helper"
 install -d -o root -g root -m 0700 /var/lib/thessley-ssh-config-rollback
 find "$lib" -name __pycache__ -type d -prune -exec rm -rf -- {} +
 
+# systemd checks ReadWritePaths while creating the service's mount namespace,
+# before ExecStart/ExecStartPre can run. Seed these paths before starting the
+# service and retain enrolled-device data on upgrades.
+for path in /etc/thessley-pam /etc/thessley-pam/users; do
+    if [[ -L "$path" || ( -e "$path" && ! -d "$path" ) ]]; then
+        echo "Refusing unsafe Thessley state path: $path" >&2
+        exit 1
+    fi
+done
+install -d -o root -g root -m 0700 /etc/thessley-pam /etc/thessley-pam/users
+enrolled_list=/etc/thessley-pam-enrolled
+if [[ -L "$enrolled_list" || ( -e "$enrolled_list" && ! -f "$enrolled_list" ) ]]; then
+    echo "Refusing unsafe Thessley enrolled-user path: $enrolled_list" >&2
+    exit 1
+fi
+if [[ ! -e "$enrolled_list" ]]; then
+    install -o root -g root -m 0644 /dev/null "$enrolled_list"
+else
+    chown root:root "$enrolled_list"
+    chmod 0644 "$enrolled_list"
+fi
+
 cat > "$tmp/thessley-pam-approvals.service" <<'UNIT'
 [Unit]
 Description=Thessley shared HTTPS listener for SSH and local phone approvals (VPN uses port 47830)
