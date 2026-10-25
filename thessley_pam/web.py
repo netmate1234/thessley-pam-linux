@@ -520,18 +520,15 @@ class WebApp:
             return "/admin", f"SSH access {action} for {username}. Existing SSH sessions remain open."
         return run
 
-    def change_ssh_rollback(self, action: str, minutes: int = 10):
+    def change_install_approval(self):
         def run():
-            helper = "/usr/local/sbin/thessley-ssh-config-rollback"
-            args = [helper, action]
-            if action == "arm":
-                args.append(str(minutes))
-            result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True,
+            helper = "/usr/local/sbin/thessley-install-rollback"
+            result = subprocess.run([helper, "approve"], stdin=subprocess.DEVNULL, capture_output=True,
                                     text=True, timeout=20, check=False)
             output = (result.stdout or result.stderr).strip()
             if result.returncode:
-                raise RuntimeError(output[-800:] or "The rollback helper failed without a message.")
-            return "/admin", output or "Rollback action completed."
+                raise RuntimeError(output[-800:] or "The installation approval helper failed without a message.")
+            return "/admin", output or "Installation approved."
         return run
 
     # -- per-key details
@@ -1388,39 +1385,30 @@ def admin_page(viewer: Session, flash: str) -> str:
     on = lambda flag: "on" if flag else "off"  # noqa: E731
     hidden = f'<input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
 
-    rollback_helper = "/usr/local/sbin/thessley-ssh-config-rollback"
+    rollback_helper = "/usr/local/sbin/thessley-install-rollback"
     try:
         result = subprocess.run([rollback_helper, "status"], stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=3, check=False)
         rollback_status = (result.stdout or result.stderr).strip()
         if result.returncode:
-            rollback_status = "Could not check the SSH/PAM rollback timer: " + (rollback_status[-500:] or "helper error")
+            rollback_status = "Could not check installation approval: " + (rollback_status[-500:] or "helper error")
     except (OSError, subprocess.SubprocessError) as exc:
-        rollback_status = f"Could not check the SSH/PAM rollback timer: {exc}"
-    rollback_pending = ("No SSH/PAM recovery timer is armed." not in rollback_status
-                       and not rollback_status.startswith("Could not check"))
+        rollback_status = f"Could not check installation approval: {exc}"
+    rollback_pending = ("awaiting approval" in rollback_status.lower()
+                        or "needs attention" in rollback_status.lower())
+    rollback_error = rollback_status.startswith("Could not check") or "needs attention" in rollback_status.lower()
     rollback = (
-        '<section class="admin-rollback"><h2>SSH login recovery timer</h2>'
-        '<div class="card"><strong>Current state</strong>'
+        '<section class="admin-rollback"><h2>Installation approval</h2>'
+        '<div class="card"><strong>Setup status</strong>'
         f'<pre class="dim" style="white-space:pre-wrap;overflow-wrap:anywhere">{esc(rollback_status)}</pre>'
-        '<p class="dim">This is a safety timer for SSH/PAM login settings only. It does not undo a Thessley app installation, phone-key changes, or VPN settings.</p>'
-        '<p class="dim">Before changing SSH/PAM settings, arm the timer and approve the phone prompt. Make the change and test a new SSH login. '
-        'If that login works, use Keep to stop the timer. If the timer expires first, the saved SSH/PAM settings are restored automatically. '
-        'Keep this browser and your current SSH session open while testing.</p>'
+        '<p class="dim">A successful Thessley core install starts this timer automatically. Verify phone approval and the web admin page, then approve the installation here. '
+        'If you do not approve it before the timer expires, the previous core app files and service state are restored. A reboot restarts the countdown. '
+        'This does not roll back enrolled phones, VPN configuration, or optional SSH/PAM policy changes.</p>'
         + (f'<form method="post" action="/admin/set" class="row">{hidden}'
-           '<input type="hidden" name="name" value="ssh_rollback">'
-           '<input type="hidden" name="action" value="cancel">'
-           '<button>Keep tested SSH settings and stop timer</button></form>' if rollback_pending else
-           (f'<p class="dim">Rollback controls are unavailable until the timer status can be read.</p>'
-            if rollback_status.startswith("Could not check") else
-           f'<form method="post" action="/admin/set" class="row">{hidden}'
-           '<input type="hidden" name="name" value="ssh_rollback">'
-           '<input type="hidden" name="action" value="arm">'
-           '<label for="ssh-rollback-minutes">Restore previous SSH settings after</label>'
-           '<select id="ssh-rollback-minutes" name="minutes">'
-           '<option value="10" selected>10 minutes</option><option value="15">15 minutes</option>'
-           '<option value="30">30 minutes</option><option value="60">60 minutes</option></select> '
-           '<button>Arm SSH recovery timer</button></form>'))
+           '<input type="hidden" name="name" value="install_approval">'
+           '<button>Approve this installation</button></form>' if rollback_pending else
+           (f'<p class="dim">The installation status needs attention. Use the installer recovery instructions before approving it.</p>'
+            if rollback_error else '<p class="dim">There is no installation waiting for approval.</p>'))
         + '</div></section>')
 
     def toggle(name: str, label: str, state: bool, explain: str) -> str:
@@ -2001,22 +1989,8 @@ def make_handler(app: WebApp):
 
         def admin_action(self, data: dict, s: Session) -> None:
             name, value = data.get("name", ""), (data.get("value") or "").strip()
-            if name == "ssh_rollback":
-                action = data.get("action", "")
-                if action == "arm":
-                    try:
-                        minutes = int(data.get("minutes", ""))
-                    except ValueError:
-                        minutes = 0
-                    if minutes not in (10, 15, 30, 60):
-                        return self.html(400, "Not valid", flash_html("Choose a rollback timer from the list."), s)
-                    description = f"arming a {minutes}-minute SSH/PAM rollback timer"
-                elif action == "cancel":
-                    minutes = 10
-                    description = "keeping the current SSH/PAM setup and stopping its rollback timer"
-                else:
-                    return self.html(400, "Not valid", flash_html("Choose Arm or Keep current setup."), s)
-                self.start_change(s, description, app.change_ssh_rollback(action, minutes))
+            if name == "install_approval":
+                self.start_change(s, "approving the completed Thessley installation", app.change_install_approval())
                 return
             if name == "ssh_policy":
                 profile = data.get("profile")

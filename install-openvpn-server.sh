@@ -78,19 +78,14 @@ DEVICE=${DEVICE:-phone}
 printf '\nThis will install OpenVPN/Easy-RSA and create a new isolated server instance on Ubuntu 24.04/26.04 LTS or Debian 13.\n'
 printf 'It will not change SSH/PAM, router settings, or an existing OpenVPN configuration.\n'
 printf 'Phone approval page: TCP 47830. VPN transport: UDP %s.\n' "$PORT"
-read -r -p 'Continue? [y/N] ' CONFIRM
-[[ $CONFIRM == y || $CONFIRM == Y ]] || exit 0
-
+if [[ ${THESSLEY_GUIDED_VPN_APPROVED:-0} != 1 ]]; then
+  read -r -p 'Continue with this VPN setup and the listed firewall changes? [y/N] ' CONFIRM
+  [[ $CONFIRM == y || $CONFIRM == Y ]] || exit 0
+fi
 UFW_ALLOW=no
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  printf '\nUFW is active. The VPN needs inbound UDP %s and TCP 47830 (phone approvals).\n' "$PORT"
-  read -r -p 'Add only these two UFW allow rules? [Y/n] ' FIREWALL_CONFIRM
-  case "$FIREWALL_CONFIRM" in
-    ''|y|Y|yes|YES|Yes)
-      UFW_ALLOW=yes
-      ;;
-    *) printf 'No UFW rules changed. Add those ports yourself before connecting remotely.\n' ;;
-  esac
+  printf '\nUFW is active. Continuing adds only inbound UDP %s and TCP 47830 (phone approvals).\n' "$PORT"
+  UFW_ALLOW=yes
 else
   printf '\nUFW is not active; no host firewall was changed. Ensure another firewall allows UDP %s and TCP 47830.\n' "$PORT"
 fi

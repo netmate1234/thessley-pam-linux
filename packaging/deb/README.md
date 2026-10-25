@@ -25,7 +25,7 @@ After the repository is configured, install the package and launch the guided se
 The guided setup installs the required shared approval service, enables the
 HTTPS web admin page by default (answer `n` to skip), and asks about other
 optional integrations. Those choices default to No. VPN-to-LAN forwarding/NAT
-is enabled by default when a LAN route is configured; answer `n` to skip it.
+is enabled automatically when a LAN route is selected; enter `none` to skip LAN access.
 It does not edit
 `sshd_config`, SSH PAM policy, or existing OpenVPN server configuration. It
 can optionally create a new isolated OpenVPN server with Thessley QR approval
@@ -39,14 +39,18 @@ VPN approval is
 enabled before phone enrollment starts, so interrupting that step leaves the
 web VPN key controls available while VPN logins remain refused until a phone
 is associated with the VPN host.
+The shared approval service arms a 60-minute installation-approval timer after
+its health check. Verify the phone approval and web page, then approve in Admin
+or run `sudo thessley-install-rollback approve`. If it expires, the previous
+core app files and service state are restored; VPN configuration, enrolled
+phones, and optional SSH/PAM policy are preserved.
 To run it directly from the source archive instead:
 
     sudo ./guided-install.sh
 
 The HTTPS web admin page is enabled by default (answer `n` to skip). Read the
-component guides before using SSH, GNOME, or VPN integration. For SSH, keep the
-current session open, arm `ssh-config-rollback.sh`, verify a fresh login, and
-cancel the timer only after that login succeeds.
+component guides before using SSH, GNOME, or VPN integration. For SSH login
+policy changes, use the separate SSH recovery procedure in `docs/SSH.md`.
 
 ## Rollback
 

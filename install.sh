@@ -56,6 +56,8 @@ unit=/etc/systemd/system/thessley-pam-approvals.service
 
 [[ -d "$src/thessley_pam" ]] || { echo "Missing source package: $src/thessley_pam" >&2; exit 1; }
 [[ -f "$src/pam-helper" && -f "$src/thessley-pam" ]] || { echo "Missing PAM helper or CLI source." >&2; exit 1; }
+[[ -x "$src/setup-rollback.sh" ]] || { echo "Missing installation approval rollback helper." >&2; exit 1; }
+"$src/setup-rollback.sh" assert-clear
 python3 - "$src/thessley_pam" <<'PY'
 import ast
 import pathlib
@@ -207,8 +209,11 @@ for _ in {1..10}; do
 done
 ss -H -ltn '( sport = :47810 )' | grep -q . || { echo "Approval service did not listen on TCP 47810." >&2; exit 1; }
 
+install -o root -g root -m 0755 "$src/setup-rollback.sh" /usr/local/sbin/thessley-install-rollback
+rm -rf -- "$tmp" || echo "Could not remove temporary staging directory: $tmp" >&2
+/usr/local/sbin/thessley-install-rollback arm "$backup" 60
 trap - EXIT
-rm -rf -- "$tmp"
 echo "Installed and health-checked Thessley PAM in $lib and $bin."
 echo "Backup: $backup"
+echo "Approve this installation in Thessley Admin after checking phone approvals and the web page; otherwise the previous core installation will be restored in 60 minutes."
 echo "The installer did not edit /etc/pam.d or SSH policy."

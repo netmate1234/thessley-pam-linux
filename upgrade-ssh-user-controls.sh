@@ -140,7 +140,7 @@ install -d -o root -g root -m 0755 "$web_dropin_dir"
 install -d -o root -g root -m 0700 /var/lib/thessley-ssh-config-rollback
 cat > "$tmp/90-thessley-ssh-users.conf" <<'UNIT'
 [Service]
-ReadWritePaths=/etc/ssh/sshd_config.d /etc/systemd/system /var/lib/thessley-pam /var/lib/thessley-ssh-config-rollback /var/backups /etc/thessley-pam
+ReadWritePaths=/etc/ssh/sshd_config.d /etc/systemd/system /var/lib/thessley-pam /var/lib/thessley-ssh-config-rollback /var/lib/thessley-setup-rollback /var/backups /etc/thessley-pam
 UNIT
 install -o root -g root -m 0644 "$tmp/90-thessley-ssh-users.conf" "$web_dropin"
 systemctl daemon-reload
@@ -152,6 +152,6 @@ fi
 
 for service in "${services[@]}"; do systemctl restart "$service"; done
 echo "Per-user SSH controls installed. sshd_config, PAM login rules, firewall, and GNOME settings were not changed."
-echo "The admin web service can manage SSH account policy and the timed SSH/PAM rollback."
+echo "The admin web service can manage SSH account policy and approve a completed installation."
 echo "Backup: $backup"
 for service in "${services[@]}"; do systemctl --no-pager --full status "$service" | sed -n '1,3p'; done
