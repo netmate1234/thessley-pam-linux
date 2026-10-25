@@ -38,9 +38,9 @@ snapshot_one() {
     local backup=$1 path=$2 key target
     key=${path#/}
     target=$backup/files/$key
+    install -d -o root -g root -m 0700 "$(dirname -- "$backup/$key")" "$(dirname -- "$target")"
     if [[ -e $path || -L $path ]]; then
         printf 'present\n' > "$backup/$key.present"
-        install -d -o root -g root -m 0700 "$(dirname -- "$target")"
         cp -a -- "$path" "$target"
     else
         printf 'absent\n' > "$backup/$key.absent"
