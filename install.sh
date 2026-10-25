@@ -165,17 +165,8 @@ for path in /etc/thessley-pam /etc/thessley-pam/users; do
     fi
 done
 install -d -o root -g root -m 0700 /etc/thessley-pam /etc/thessley-pam/users
-enrolled_list=/etc/thessley-pam-enrolled
-if [[ -L "$enrolled_list" || ( -e "$enrolled_list" && ! -f "$enrolled_list" ) ]]; then
-    echo "Refusing unsafe Thessley enrolled-user path: $enrolled_list" >&2
-    exit 1
-fi
-if [[ ! -e "$enrolled_list" ]]; then
-    install -o root -g root -m 0644 /dev/null "$enrolled_list"
-else
-    chown root:root "$enrolled_list"
-    chmod 0644 "$enrolled_list"
-fi
+install -d -o root -g root -m 0755 /var/lib/thessley-pam
+"$src/prepare-enrolled-list.sh"
 
 cat > "$tmp/thessley-pam-approvals.service" <<'UNIT'
 [Unit]
@@ -198,7 +189,7 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled /run/thessley-pam
+ReadWritePaths=/etc/thessley-pam /var/lib/thessley-pam /run/thessley-pam
 
 [Install]
 WantedBy=multi-user.target

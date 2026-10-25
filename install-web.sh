@@ -12,7 +12,10 @@ set -eu
 
 [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }
 [ -x /usr/local/sbin/thessley-pam ] || { echo "Run install.sh first." >&2; exit 1; }
+src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+[ -x "$src/prepare-enrolled-list.sh" ] || { echo "Missing prepare-enrolled-list.sh from the Thessley source package." >&2; exit 1; }
 command -v qrencode >/dev/null || { echo "Missing qrencode: sudo apt install qrencode" >&2; exit 1; }
+"$src/prepare-enrolled-list.sh"
 
 unit=/etc/systemd/system/thessley-pam-web.service
 cat > "$unit" <<'UNIT'
@@ -30,15 +33,13 @@ ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
 # The web UI issues client certificates; allow EasyRSA to update its PKI, but keep the CA signing key read-only.
-ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled /etc/ssh/sshd_config.d /etc/systemd/system /var/lib/thessley-ssh-config-rollback /var/backups -/etc/openvpn/easy-rsa-thessley/pki
+ReadWritePaths=/etc/thessley-pam /etc/ssh/sshd_config.d /etc/systemd/system /var/lib/thessley-pam /var/lib/thessley-ssh-config-rollback /var/backups -/etc/openvpn/easy-rsa-thessley/pki
 ReadOnlyPaths=-/etc/openvpn/easy-rsa-thessley/pki/private/ca.key
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 chmod 0644 "$unit"
-# The unit may write this one file (the login-screen list); it has to exist for the sandbox to map it.
-[ -e /etc/thessley-pam-enrolled ] || install -m 0644 /dev/null /etc/thessley-pam-enrolled
 systemctl daemon-reload
 echo "Installed $unit (not started)."
 echo "Start it with:  sudo thessley-pam web on"

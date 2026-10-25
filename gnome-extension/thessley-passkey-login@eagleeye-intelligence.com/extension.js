@@ -6,7 +6,7 @@
 // extension turns that line into a QR code. Whichever conversation succeeds first logs in, so typing the
 // password always keeps working.
 //
-// Only users listed in /etc/thessley-pam-enrolled get the background conversation; nobody else sees a QR
+// Only users listed in /var/lib/thessley-pam/enrolled-users get the background conversation; nobody else sees a QR
 // code or any change. If the phone conversation ends (timeout, deny, phone unreachable) it is restarted, with
 // a minimum spacing so a fast-failing helper can't spin.
 //
@@ -26,7 +26,7 @@ import {QrCode} from 'resource:///org/gnome/shell/ui/qrCode.js';
 
 const SERVICE = 'gdm-thessley';
 const MARKER = 'THESSLEY-QR ';
-const ENROLLED = '/etc/thessley-pam-enrolled';
+const ENROLLED = '/var/lib/thessley-pam/enrolled-users';
 const MIN_RESTART_SPACING_MS = 5000;
 // The link creates a dense QR code, so keep modules large enough to scan while leaving room for
 // the username and authentication controls above it. A 320 px code gives about 6 px per module.

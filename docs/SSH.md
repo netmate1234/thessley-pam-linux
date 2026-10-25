@@ -110,7 +110,7 @@ Use `--ip-scope any` only on hosts where SSH clients can arrive from changing ad
 user and service from every source IP until it expires; it still requires an enrolled phone approval and does not apply
 to other PAM services. Switch back with `--ip-scope same`. The setting is stored on this computer.
 
-Before changing SSH or PAM settings, arm the persistent rollback timer from this source directory:
+Before changing SSH or PAM settings, arm the persistent SSH login-recovery timer from this source directory:
 
     sudo ./ssh-config-rollback.sh arm 10
     sudo ./ssh-config-rollback.sh status
@@ -129,7 +129,7 @@ Keep the current SSH session open while you try a fresh login. After the new log
 
     sudo /usr/local/sbin/thessley-ssh-config-rollback cancel
 
-The snapshot remains in `/var/backups/thessley-ssh-config-rollback-*`. Check a pending timer with
+This timer restores SSH/PAM login configuration only. It does not undo the Thessley app installation, phone-key changes, or VPN configuration. The snapshot remains in `/var/backups/thessley-ssh-config-rollback-*`. Check a pending timer with
 `sudo /usr/local/sbin/thessley-ssh-config-rollback status`. If it fires, the old SSH and PAM config is restored
 automatically; check `journalctl -u thessley-ssh-config-rollback.service` for its result.
 

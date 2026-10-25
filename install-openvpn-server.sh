@@ -8,6 +8,7 @@ umask 077
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die 'Run with sudo: sudo bash install-openvpn-server.sh'
 [[ -x /usr/local/sbin/thessley-pam ]] || die 'Install the Thessley Linux package first (Linux installation guide).'
+src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 [[ -r /etc/os-release ]] || die 'Cannot identify this Linux distribution.'
 . /etc/os-release
 case "${ID:-}:${VERSION_ID:-}" in
@@ -27,6 +28,7 @@ if [[ -e $PKI ]]; then
   PKI_RESUME=yes
   printf 'Found an existing Thessley CA at %s; it will be preserved and reused.\n' "$PKI"
 fi
+
 
 read -r -p 'Public DNS name or IP address reachable by your phone: ' HOST
 [[ -n $HOST ]] || die 'A real public DNS name or IP address is required; do not use an example value.'
@@ -102,6 +104,8 @@ if [[ $PKI_RESUME == yes ]]; then
   [[ -f $MIGRATE_CA ]] || die "This encrypted CA must be migrated once. Run: sudo bash /opt/thessley-pam-linux/migrate-vpn-ca-unencrypted.sh"
   bash "$MIGRATE_CA"
 fi
+
+"$src/prepare-enrolled-list.sh"
 
 install -d -o root -g root -m 0755 /etc/openvpn/server
 if [[ $PKI_RESUME == no ]]; then
@@ -219,13 +223,12 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled /run/thessley-pam-vpn
+ReadWritePaths=/etc/thessley-pam /var/lib/thessley-pam /run/thessley-pam-vpn
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 chmod 0644 "$VPN_UNIT"
-[[ -e /etc/thessley-pam-enrolled ]] || install -o root -g root -m 0644 /dev/null /etc/thessley-pam-enrolled
 systemctl daemon-reload
 /usr/local/sbin/thessley-pam vpn public-host "$HOST"
 /usr/local/sbin/thessley-pam vpn server-port "$PORT"

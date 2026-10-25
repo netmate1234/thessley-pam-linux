@@ -15,13 +15,14 @@ set -eu
 [ -x /usr/local/lib/thessley-pam/pam-helper ] || { echo "Run install.sh first." >&2; exit 1; }
 
 src=$(cd "$(dirname "$0")" && pwd)
+"$src/prepare-enrolled-list.sh"
 uuid=thessley-passkey-login@eagleeye-intelligence.com
 ext=/usr/share/gnome-shell/extensions/$uuid
 greeter=/etc/gdm3/greeter.dconf-defaults
 
 install -o root -g root -m 0644 "$src/packaging/gdm-thessley" /etc/pam.d/gdm-thessley
 
-# The extension reads /etc/thessley-pam-enrolled to know whom to offer the QR code; (re)write it now for
+# The extension reads /var/lib/thessley-pam/enrolled-users to know whom to offer the QR code; (re)write it now for
 # phones enrolled before this was installed.
 python3 -I -c 'import sys; sys.path.insert(0, "/usr/local/lib/thessley-pam")
 from thessley_pam import store

@@ -176,8 +176,8 @@ restore() {
 cancel() {
     local backup=''
     [[ -r $ACTIVE_BACKUP ]] && backup=$(cat "$ACTIVE_BACKUP")
-    if [[ ! -e $TIMER_PATH && ! -e $SERVICE_PATH ]]; then
-        echo 'No Thessley SSH configuration rollback timer is pending.'
+    if [[ ! -e $TIMER_PATH && ! -e $SERVICE_PATH && ! -e $ACTIVE_BACKUP ]]; then
+        echo 'No SSH/PAM recovery timer is armed.'
         return 0
     fi
     cleanup_units
@@ -191,8 +191,15 @@ status() {
     if systemctl is-active --quiet "$TIMER_NAME"; then
         systemctl list-timers --all --no-legend "$TIMER_NAME"
         [[ -r $ACTIVE_BACKUP ]] && printf 'Snapshot: %s\n' "$(cat "$ACTIVE_BACKUP")"
+    elif [[ -e $TIMER_PATH || -e $SERVICE_PATH || -e $ACTIVE_BACKUP ]]; then
+        local service_state result
+        service_state=$(systemctl show "$SERVICE_NAME" --property=ActiveState --value 2>/dev/null || true)
+        result=$(systemctl show "$SERVICE_NAME" --property=Result --value 2>/dev/null || true)
+        echo "SSH/PAM recovery needs attention: no timer is active (rollback service state: ${service_state:-unknown}, result: ${result:-unknown})."
+        [[ -r $ACTIVE_BACKUP ]] && printf 'Snapshot: %s\n' "$(cat "$ACTIVE_BACKUP")"
+        echo "After verifying a fresh SSH login, use the Admin recovery button to clear this inactive timer record."
     else
-        echo 'No Thessley SSH configuration rollback timer is pending.'
+        echo 'No SSH/PAM recovery timer is armed.'
     fi
 }
 

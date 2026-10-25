@@ -199,7 +199,7 @@ class LoginTest(SudoTest):
         import tempfile
         real = tempfile.mkstemp
         def no_temp(*a, **k):
-            if k.get("prefix") == ".thessley-pam-enrolled.":
+            if k.get("prefix") == ".enrolled-users.":
                 raise OSError(30, "Read-only file system")
             return real(*a, **k)
         tempfile.mkstemp = no_temp

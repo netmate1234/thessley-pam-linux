@@ -17,6 +17,10 @@ web_dropin=$web_dropin_dir/90-thessley-ssh-users.conf
 for file in web.py grants.py pam.py; do
     [[ -f "$src/thessley_pam/$file" ]] || { echo "Missing source: $src/thessley_pam/$file" >&2; exit 1; }
 done
+[[ -f "$src/thessley_pam/store.py" && -x "$src/prepare-enrolled-list.sh" ]] || {
+    echo "Missing enrolled-marker migration source in $src" >&2
+    exit 1
+}
 [[ -f "$src/pam-module/pam_thessley_phone.c" ]] || { echo "Missing PAM module source." >&2; exit 1; }
 command -v gcc >/dev/null || { echo "gcc is required (install build-essential first)." >&2; exit 1; }
 [[ -f /usr/include/security/pam_modules.h ]] || { echo "PAM headers are required (install libpam0g-dev first)." >&2; exit 1; }
@@ -126,20 +130,22 @@ applied=1
 install -o root -g root -m 0644 "$src/thessley_pam/web.py" "$lib/thessley_pam/web.py"
 install -o root -g root -m 0755 "$src/ssh-config-rollback.sh" /usr/local/sbin/thessley-ssh-config-rollback
 install -o root -g root -m 0644 "$src/thessley_pam/grants.py" "$lib/thessley_pam/grants.py"
+install -o root -g root -m 0644 "$src/thessley_pam/store.py" "$lib/thessley_pam/store.py"
 install -o root -g root -m 0644 "$src/thessley_pam/pam.py" "$lib/thessley_pam/pam.py"
 install -o root -g root -m 0644 "$src/thessley_pam/machine.py" "$lib/thessley_pam/machine.py"
 install -o root -g root -m 0644 "$tmp/pam_thessley_phone.so" "$old_module"
 find "$lib/thessley_pam" -name __pycache__ -type d -prune -exec rm -rf -- {} +
+"$src/prepare-enrolled-list.sh"
 install -d -o root -g root -m 0755 "$web_dropin_dir"
 install -d -o root -g root -m 0700 /var/lib/thessley-ssh-config-rollback
 cat > "$tmp/90-thessley-ssh-users.conf" <<'UNIT'
 [Service]
-ReadWritePaths=/etc/ssh/sshd_config.d /etc/systemd/system /var/lib/thessley-ssh-config-rollback /var/backups
+ReadWritePaths=/etc/ssh/sshd_config.d /etc/systemd/system /var/lib/thessley-pam /var/lib/thessley-ssh-config-rollback /var/backups /etc/thessley-pam
 UNIT
 install -o root -g root -m 0644 "$tmp/90-thessley-ssh-users.conf" "$web_dropin"
 systemctl daemon-reload
 web_writable_paths=$(systemctl show thessley-pam-web.service --property=ReadWritePaths --value)
-if [[ " $web_writable_paths " != *" /etc/ssh/sshd_config.d "* || " $web_writable_paths " != *" /etc/systemd/system "* || " $web_writable_paths " != *" /var/backups "* ]]; then
+if [[ " $web_writable_paths " != *" /etc/ssh/sshd_config.d "* || " $web_writable_paths " != *" /etc/systemd/system "* || " $web_writable_paths " != *" /var/lib/thessley-pam "* || " $web_writable_paths " != *" /var/backups "* ]]; then
     echo "The web service did not load the managed SSH and rollback write paths." >&2
     exit 1
 fi

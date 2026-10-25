@@ -1397,28 +1397,30 @@ def admin_page(viewer: Session, flash: str) -> str:
             rollback_status = "Could not check the SSH/PAM rollback timer: " + (rollback_status[-500:] or "helper error")
     except (OSError, subprocess.SubprocessError) as exc:
         rollback_status = f"Could not check the SSH/PAM rollback timer: {exc}"
-    rollback_pending = ("No Thessley SSH configuration rollback timer is pending." not in rollback_status
+    rollback_pending = ("No SSH/PAM recovery timer is armed." not in rollback_status
                        and not rollback_status.startswith("Could not check"))
     rollback = (
-        '<section class="admin-rollback"><h2>SSH / PAM setup rollback</h2>'
-        '<div class="card"><strong>Rollback timer</strong>'
+        '<section class="admin-rollback"><h2>SSH login recovery timer</h2>'
+        '<div class="card"><strong>Current state</strong>'
         f'<pre class="dim" style="white-space:pre-wrap;overflow-wrap:anywhere">{esc(rollback_status)}</pre>'
-        '<p class="dim">This timer restores SSH and PAM configuration plus Thessley SSH login policies if a change prevents a new SSH login. '
-        'It does not roll back phone keys, VPN configuration, or the whole Thessley app. Keep this browser and your current SSH session open while testing.</p>'
+        '<p class="dim">This is a safety timer for SSH/PAM login settings only. It does not undo a Thessley app installation, phone-key changes, or VPN settings.</p>'
+        '<p class="dim">Before changing SSH/PAM settings, arm the timer and approve the phone prompt. Make the change and test a new SSH login. '
+        'If that login works, use Keep to stop the timer. If the timer expires first, the saved SSH/PAM settings are restored automatically. '
+        'Keep this browser and your current SSH session open while testing.</p>'
         + (f'<form method="post" action="/admin/set" class="row">{hidden}'
            '<input type="hidden" name="name" value="ssh_rollback">'
            '<input type="hidden" name="action" value="cancel">'
-           '<button>Keep current SSH setup and stop rollback</button></form>' if rollback_pending else
+           '<button>Keep tested SSH settings and stop timer</button></form>' if rollback_pending else
            (f'<p class="dim">Rollback controls are unavailable until the timer status can be read.</p>'
             if rollback_status.startswith("Could not check") else
            f'<form method="post" action="/admin/set" class="row">{hidden}'
            '<input type="hidden" name="name" value="ssh_rollback">'
            '<input type="hidden" name="action" value="arm">'
-           '<label for="ssh-rollback-minutes">Rollback after</label>'
+           '<label for="ssh-rollback-minutes">Restore previous SSH settings after</label>'
            '<select id="ssh-rollback-minutes" name="minutes">'
            '<option value="10" selected>10 minutes</option><option value="15">15 minutes</option>'
            '<option value="30">30 minutes</option><option value="60">60 minutes</option></select> '
-           '<button>Arm SSH rollback</button></form>'))
+           '<button>Arm SSH recovery timer</button></form>'))
         + '</div></section>')
 
     def toggle(name: str, label: str, state: bool, explain: str) -> str:

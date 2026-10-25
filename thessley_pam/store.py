@@ -19,7 +19,7 @@ USERS = os.path.join(BASE, "users")
 # World-readable list of user names that have at least one phone, one per line. The GNOME Shell extension runs
 # as the gdm user (login screen) or as the user (lock screen) and can't read BASE; it uses this to decide
 # whether to offer the QR code at all. Holds names only, no keys.
-ENROLLED = "/etc/thessley-pam-enrolled"
+ENROLLED = "/var/lib/thessley-pam/enrolled-users"
 
 
 def _check_user(username: str) -> None:
@@ -86,14 +86,7 @@ def write_enrolled_list() -> None:
             if any(not d.get("disabled") for d in json.load(f).get("devices", [])):
                 names.append(entry[:-5])
     text = "".join(n + "\n" for n in names)
-    try:
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".thessley-pam-enrolled.")
-    except OSError:
-        # The admin web service sees /etc read-only except this one file (ReadWritePaths), so it can't make a
-        # temp file next to it; rewrite the file in place instead. It is tiny, so a torn read is not a concern.
-        with open(ENROLLED, "w") as f:
-            f.write(text)
-        return
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".enrolled-users.")
     with os.fdopen(fd, "w") as f:
         f.write(text)
     os.chmod(tmp, 0o644)

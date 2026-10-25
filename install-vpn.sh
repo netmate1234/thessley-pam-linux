@@ -15,6 +15,7 @@ set -eu
 [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }
 [ -x /usr/local/sbin/thessley-pam ] || { echo "Run install.sh first." >&2; exit 1; }
 command -v qrencode >/dev/null || { echo "Missing qrencode: sudo apt install qrencode" >&2; exit 1; }
+src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 install -o root -g root -m 0755 /dev/stdin /usr/local/lib/thessley-pam/vpn-auth <<'WRAP'
 #!/bin/sh
@@ -23,6 +24,7 @@ exec /usr/local/sbin/thessley-pam vpn auth
 WRAP
 
 unit=/etc/systemd/system/thessley-pam-vpn.service
+"$src/prepare-enrolled-list.sh"
 cat > "$unit" <<'UNIT'
 [Unit]
 Description=Thessley approval for OpenVPN logins (device approval after the client certificate)
@@ -43,13 +45,12 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled /run/thessley-pam-vpn
+ReadWritePaths=/etc/thessley-pam /var/lib/thessley-pam /run/thessley-pam-vpn
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 chmod 0644 "$unit"
-[ -e /etc/thessley-pam-enrolled ] || install -m 0644 /dev/null /etc/thessley-pam-enrolled
 systemctl daemon-reload
 echo "Installed $unit (not started)."
 echo "Next: sudo thessley-pam vpn public-host NAME ; sudo thessley-pam vpn on   (see docs/VPN.md for OpenVPN itself)"
