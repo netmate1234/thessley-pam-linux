@@ -299,6 +299,13 @@ class WebApp:
         flow.state = "approved" if rc == pam.OK else ("timeout" if "no answer" in text else "refused")
         if flow.state != "approved":
             flow.on_approved = None
+        elif flow.kind == "change":
+            # Run approved mutations in the worker that receives the phone
+            # answer. Do not rely on the browser's next status poll to execute
+            # an already-approved operation; the browser may have been closed
+            # or its polling request may fail.
+            self.finish(flow)
+            self.log(f"web page: approved change '{flow.description}' for {flow.user}: {flow.flash}")
 
     def usable(self, user: str) -> bool:
         """An account that exists and has at least one device that may approve (pam.run would let anyone else straight in)."""
@@ -374,7 +381,9 @@ class WebApp:
                 try:
                     flow.result_url, flow.flash = flow.on_approved()
                 except Exception as exc:
-                    flow.result_url, flow.flash = "/keys", f"That did not work: {exc}"
+                    flow.result_url = "/admin" if flow.description == "approving the completed Thessley installation" else "/keys"
+                    flow.flash = f"That did not work: {exc}"
+                    self.log(f"web page: approved change '{flow.description}' failed: {exc!r}")
                 finally:
                     flow.on_approved = None
             return flow.result_url, flow.flash
