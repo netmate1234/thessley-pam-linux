@@ -185,9 +185,10 @@ if [[ $LAN_ROUTE != none ]]; then
 fi
 chmod 0644 "$CONF"
 
-# Ensure the CA tree is traversable by the dropped-privilege OpenVPN process,
-# without making any private key readable to it.
-chmod 0711 "$PKI" "$PKI/pki"
+# Keep the CA and its PKI writable by root for future Easy-RSA operations, and
+# inaccessible to the dropped-privilege OpenVPN process. OpenVPN reads its
+# public CA/CRL and server key material from /etc/openvpn/server, not this tree.
+chmod 0700 "$PKI" "$PKI/pki"
 chmod 0644 "$PKI/pki/crl.pem"
 
 # Install the Thessley OpenVPN approval helper and its dedicated daemon.
@@ -235,8 +236,17 @@ systemctl daemon-reload
 # and can issue a client key; logins remain refused until an approving phone
 # is associated with the VPN host.
 /usr/local/sbin/thessley-pam vpn on
-install -d -o root -g root -m 0711 "$PKI" "$PKI/pki"
+install -d -o root -g root -m 0700 "$PKI" "$PKI/pki"
 install -o root -g root -m 0644 "$PKI/pki/crl.pem" /etc/openvpn/server/crl.pem
+
+# systemd applies ReadWritePaths when it creates the web service mount
+# namespace. The web service may have started before this PKI existed, so
+# refresh it now to enable future VPN client certificate issuance.
+if systemctl is-active --quiet thessley-pam-web.service; then
+  echo 'Refreshing the Thessley web service sandbox for the new VPN PKI...'
+  systemctl restart thessley-pam-web.service
+fi
+
 systemctl enable --now openvpn-server@thessley
 if [[ $UFW_ALLOW == yes ]]; then
   ufw allow "$PORT/udp" comment 'Thessley OpenVPN transport'
