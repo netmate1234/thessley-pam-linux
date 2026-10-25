@@ -761,11 +761,13 @@ nav a,.link{color:var(--accent);text-decoration:none;margin-right:14px}nav{margi
 .admin-users h2{margin:0 0 .45rem}.admin-users>p{margin:0 0 14px}
 .dim{color:var(--dim);font-size:.9rem}.ok{color:var(--ok)}.bad{color:var(--danger)}
 input[type=text]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:1rem}
+select{max-width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:1rem}
 button{padding:9px 14px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font-size:.95rem;cursor:pointer}
 .btn{display:inline-block;padding:11px 18px;border-radius:8px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}
 .btn.small{padding:7px 12px;font-size:.9rem}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button.danger{color:var(--danger);border-color:var(--danger)}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}.row form{display:inline}
+.ssh-user-policy-form{display:grid;gap:8px}.ssh-user-policy-form select{width:100%;min-width:0}
 .ssh-policy-options{display:grid;gap:8px;margin:12px 0}.ssh-policy-options label{display:flex;gap:9px;align-items:flex-start}
 .ssh-policy-options input[type=checkbox]{width:1.1rem;height:1.1rem;flex:0 0 auto;margin:.2rem 0 0}
 .ssh-source-form{display:grid;gap:8px;margin-top:10px;min-width:0}
@@ -1383,6 +1385,27 @@ def admin_page(viewer: Session, flash: str) -> str:
         + '<button>Save SSH source IPs</button></form></div>')
     qr_group = ssh_qr_group_members()
     account_rows = []
+    profile_paths = {
+        "qr_only": (True, False, False),
+        "key_qr": (False, True, False),
+        "key_password": (False, False, True),
+        "key_qr_password": (False, True, True),
+        "qr_password": (True, False, True),
+        "qr_key_qr": (True, True, False),
+        "all_paths": (True, True, True),
+    }
+    paths_profile = {paths: name for name, paths in profile_paths.items()}
+    user_profiles = (
+        ("inherit", "Use computer-wide policy"),
+        ("qr_only", "Phone QR only (no SSH key or password)"),
+        ("key_qr", "SSH key, then phone approval"),
+        ("key_password", "SSH key + account password (no phone)"),
+        ("key_qr_password", "SSH key + phone approval OR SSH key + password"),
+        ("qr_password", "Phone QR only OR SSH key + password"),
+        ("qr_key_qr", "Phone QR only OR SSH key + phone approval"),
+        ("all_paths", "Any of the phone QR, key + phone, or key + password paths"),
+        ("blocked", "Block SSH for this account"),
+    )
     for username in interactive_accounts():
         try:
             devices = store.devices(username)
@@ -1390,40 +1413,71 @@ def admin_page(viewer: Session, flash: str) -> str:
         except (OSError, KeyError, ValueError):
             devices, active_count = [], 0
         phone_state = (f"{active_count} active phone{'s' if active_count != 1 else ''}"
-                       if active_count else "No active phone · first enrollment needed")
+                       if active_count else "No active phone · enrolled devices disabled"
+                       if devices else "No phone enrolled · first enrollment needed")
         blocked = grants.ssh_user_is_blocked(username)
-        ssh_state = ("Blocked at the SSH server" if blocked else
-                     "SSH QR policy applies" if username in qr_group else "Standard SSH authentication")
+        qr_member = username in qr_group
         ssh_controls = ""
-        if username in qr_group:
+        if qr_member:
             mode = grants.ssh_user_login_mode(username)
             policy = grants.ssh_user_login_policy(username)
             blocked = blocked or policy["blocked"]
             policy["blocked"] = blocked
-            ssh_state = "Blocked at the SSH server" if blocked else "SSH QR policy applies"
+            if blocked:
+                profile = "blocked"
+            elif mode == "inherit":
+                profile = "inherit"
+            else:
+                profile = paths_profile.get((policy["qr_only"], policy["key_qr"], policy["key_password"]), "inherit")
+            profile_options = "".join(
+                f'<option value="{name}"{" selected" if profile == name else ""}>{esc(label)}</option>'
+                for name, label in user_profiles
+            )
+            if blocked:
+                effective = "Effective: new SSH connections are refused."
+            else:
+                effective_policy = grants.ssh_login_policy() if profile == "inherit" else policy
+                paths = []
+                if effective_policy["qr_only"]:
+                    paths.append("phone QR approval")
+                if effective_policy["key_qr"]:
+                    paths.append("SSH key then phone approval")
+                if effective_policy["key_password"]:
+                    paths.append("SSH key plus account password")
+                effective_label = " or ".join(paths) if paths else "no allowed login path"
+                phone_paths = effective_policy["qr_only"] or effective_policy["key_qr"]
+                if phone_paths and active_count:
+                    phone_note = "An enrolled phone is available; a valid approval pass may skip a fresh QR."
+                elif phone_paths and devices:
+                    phone_note = "All enrolled phones are disabled, so phone-approved paths will be refused."
+                elif phone_paths and effective_policy["key_password"]:
+                    phone_note = "No active phone; SSH key + password remains available without QR approval."
+                elif phone_paths:
+                    phone_note = "No active phone; phone-approved paths will be refused until enrollment."
+                else:
+                    phone_note = "No phone approval is used by the selected paths."
+                effective = f"Effective: {effective_label}. {phone_note}"
+            ssh_state = "Blocked at the SSH server" if blocked else "Phone approval policy applies"
             ssh_controls = (
-                f'<form method="post" action="/admin/set" class="row ssh-user-policy-form">{hidden}'
+                f'<form method="post" action="/admin/set" class="ssh-user-policy-form">{hidden}'
                 '<input type="hidden" name="name" value="ssh_user_policy">'
                 f'<input type="hidden" name="user" value="{esc(username)}">'
-                f'<label><input type="checkbox" name="inherit" value="on"{" checked" if mode == "inherit" else ""}> Use the computer-wide policy</label>'
-                '<p class="dim">Change any path checkbox below to save a per-user policy; this automatically turns off the computer-wide option.</p>'
-                '<div class="ssh-policy-options">'
-                f'<label><input type="checkbox" name="qr_only" value="on"{" checked" if policy["qr_only"] else ""}> <span>QR-only login</span></label>'
-                f'<label><input type="checkbox" name="key_qr" value="on"{" checked" if policy["key_qr"] else ""}> <span>SSH key + QR approval</span></label>'
-                f'<label><input type="checkbox" name="key_password" value="on"{" checked" if policy["key_password"] else ""}> <span>SSH key + account password</span></label>'
-                f'<label><input type="checkbox" name="blocked" value="on"{" checked" if policy["blocked"] else ""}> <span>Block SSH for this account</span></label>'
-                '</div>'
-                f'<button>Save SSH access for {esc(username)}</button></form>')
+                f'<label>SSH access profile <select name="profile">{profile_options}</select></label>'
+                f'<p class="dim">{esc(effective)}</p>'
+                f'<button>Save access for {esc(username)}</button></form>')
         else:
+            profile = "blocked" if blocked else "standard"
+            ssh_state = "Blocked at the SSH server" if blocked else "Standard SSH authentication"
             ssh_controls = (
-                f'<form method="post" action="/admin/set" class="row">{hidden}'
+                f'<form method="post" action="/admin/set" class="ssh-user-policy-form">{hidden}'
                 '<input type="hidden" name="name" value="ssh_user_policy">'
                 f'<input type="hidden" name="user" value="{esc(username)}">'
-                f'<label><input type="checkbox" name="blocked" value="on"{" checked" if blocked else ""}> '
-                '<span>Block SSH for this account</span></label>'
-                '<p class="dim">This works for accounts outside <span class="mono">thessley-ssh</span> too. '
-                'It blocks new SSH logins at the SSH server, for every authentication method; existing sessions stay open.</p>'
-                f'<button>Save SSH access for {esc(username)}</button></form>')
+                '<label>SSH access profile <select name="profile">'
+                f'<option value="standard"{" selected" if profile == "standard" else ""}>Standard SSH authentication</option>'
+                f'<option value="blocked"{" selected" if profile == "blocked" else ""}>Block SSH for this account</option>'
+                '</select></label>'
+                '<p class="dim">Standard SSH keeps the account’s existing OpenSSH methods. Blocking denies all new SSH authentication for this account; existing sessions stay open.</p>'
+                f'<button>Save access for {esc(username)}</button></form>')
         account_rows.append(
             f'<div class="card"><strong>{esc(username)}</strong>'
             f'<div class="dim">SSH: {esc(ssh_state)}</div><div class="dim">Phone: {esc(phone_state)}</div>'
@@ -1431,48 +1485,26 @@ def admin_page(viewer: Session, flash: str) -> str:
             f'<div class="row"><a class="btn small" href="/keys?user={esc(username)}">Manage devices / enroll</a></div></div>')
     users_section = (
         '<section class="admin-users"><h2>Users and first enrollment</h2>'
-        '<p class="dim">Choose an account to review its enrolled phones or add its first one. On the account page, select '
-        '<strong>Add a device</strong>, scan the QR or open the link, then compare and confirm the two codes. '
-        'The administrator signed in here must approve the change on their own phone.</p>'
-        '<p class="dim">QR login choices apply to members of <span class="mono">thessley-ssh</span>. '
-        'Per-user settings override the computer-wide SSH policy for group members. “Block SSH” applies at the SSH server to any account, '
-        'including accounts outside that group, and denies new connections using any authentication method. Existing sessions stay open. '
-        'QR-only requires sshd to permit keyboard-interactive login without a public key; '
-        'if sshd requires <span class="mono">publickey,keyboard-interactive:pam</span>, use SSH key + QR instead.</p>'
+        '<p class="dim">Choose one profile per account. Each selected path is a complete login method; multiple paths are alternatives (OR). The effective login behavior and phone state are shown on each card. '
+        'Select <strong>Manage devices / enroll</strong> to add a phone. “Block SSH” denies all new SSH authentication for that account, even outside the Thessley group; existing sessions stay open.</p>'
         + ("".join(account_rows) or '<div class="card dim">No interactive accounts found.</div>')
-        + '</section>'
-        '<script nonce="{NONCE}">'
-        'document.querySelectorAll(".ssh-user-policy-form").forEach(function(form){'
-        'var inherit=form.querySelector("[name=inherit]");'
-        'var blocked=form.querySelector("[name=blocked]");'
-        'var paths=form.querySelectorAll("[name=qr_only],[name=key_qr],[name=key_password]");'
-        'paths.forEach(function(box){box.addEventListener("change",function(){'
-        'inherit.checked=false;if(box.checked)blocked.checked=false;'
-        '});});'
-        'blocked.addEventListener("change",function(){inherit.checked=false;'
-        'if(blocked.checked)paths.forEach(function(box){box.checked=false;});'
-        '});'
-        '});'
-        '</script>')
-    ssh_policy = grants.ssh_login_policy()
-    ssh_policy = (f'<div class="card"><strong>SSH login policy</strong>'
-                  '<div class="dim">Applies only to accounts in the thessley-ssh group. '
-                  'Changes are applied to the next SSH login.</div>'
-                  f'<form method="post" action="/admin/set">{hidden}'
+        + '</section>')
+    ssh_policy_paths = grants.ssh_login_policy()
+    global_profile = paths_profile.get((ssh_policy_paths["qr_only"], ssh_policy_paths["key_qr"],
+                                        ssh_policy_paths["key_password"]), "key_qr_password")
+    global_profile_options = "".join(
+        f'<option value="{name}"{" selected" if global_profile == name else ""}>{esc(label)}</option>'
+        for name, label in user_profiles if name not in ("inherit", "blocked")
+    )
+    ssh_policy = (f'<div class="card"><strong>Computer-wide SSH login profile</strong>'
+                  '<div class="dim">Applies to members of <span class="mono">thessley-ssh</span> who use the computer-wide policy. '
+                  'Each profile is a set of complete alternative paths (OR); per-user profiles above can override it.</div>'
+                  f'<form method="post" action="/admin/set" class="ssh-user-policy-form">{hidden}'
                   '<input type="hidden" name="name" value="ssh_policy">'
-                  '<div class="ssh-policy-options">'
-                  f'<label><input type="checkbox" name="qr_only" value="on"{" checked" if ssh_policy["qr_only"] else ""}> <span>QR-only login (no key or password on this path)</span></label>'
-                  f'<label><input type="checkbox" name="key_qr" value="on"{" checked" if ssh_policy["key_qr"] else ""}> <span>SSH key + QR phone approval</span></label>'
-                  f'<label><input type="checkbox" name="key_password" value="on"{" checked" if ssh_policy["key_password"] else ""}> <span>Allow SSH key + account password (recovery if QR is unavailable)</span></label>'
-                  '</div>'
-                  '<button>Save SSH policy</button></form>'
-                  '<div class="dim"><p>Each checked box enables a complete alternative login path (OR). A login only needs to complete one selected path.</p>'
-                  '<ul><li><strong>QR-only:</strong> no SSH key or account password is needed. A fresh phone approval starts the configured SSH pass; until it expires, eligible logins from the configured IP scope do not ask again. Set the pass to 0 to ask every time.</li>'
-                  '<li><strong>SSH key + QR:</strong> provide an SSH key, then approve on the phone. The configured approval pass may apply.</li>'
-                  '<li><strong>SSH key + password:</strong> provide an SSH key and the account password. This route always requires a key.</li></ul>'
-                  '<p><strong>Examples:</strong> QR-only permits keyless QR logins and then uses the configured pass duration and IP scope. SSH key + QR together with SSH key + password tries phone approval first; '
-                  'the password route can recover if no phone is enrolled, approval is denied, or it times out. QR-only together with SSH key + password '
-                  'permits keyless QR logins or key + password logins.</p></div></div>')
+                  f'<label>SSH access profile <select name="profile">{global_profile_options}</select></label>'
+                  '<p class="dim">Phone-based paths require an active enrolled phone. A valid approval pass can skip a fresh QR. '
+                  'The SSH key + password path does not use phone approval and can serve as a recovery path.</p>'
+                  '<button>Save computer-wide profile</button></form></div>')
     grace = (f'<div class="card"><strong>How long one approval counts for ssh</strong>: {sshd_grace:g} h'
              f'<div class="dim">After one approval, logins from the configured IP scope need no new one for this long. 0 means every login asks.</div>'
              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace">'
@@ -1871,9 +1903,24 @@ def make_handler(app: WebApp):
         def admin_action(self, data: dict, s: Session) -> None:
             name, value = data.get("name", ""), (data.get("value") or "").strip()
             if name == "ssh_policy":
-                qr_only = data.get("qr_only") == "on"
-                key_qr = data.get("key_qr") == "on"
-                key_password = data.get("key_password") == "on"
+                profile = data.get("profile")
+                if profile is not None:
+                    profile_paths = {
+                        "qr_only": (True, False, False),
+                        "key_qr": (False, True, False),
+                        "key_password": (False, False, True),
+                        "key_qr_password": (False, True, True),
+                        "qr_password": (True, False, True),
+                        "qr_key_qr": (True, True, False),
+                        "all_paths": (True, True, True),
+                    }
+                    if profile not in profile_paths:
+                        return self.html(400, "Not valid", flash_html("Choose one of the listed computer-wide SSH profiles."), s)
+                    qr_only, key_qr, key_password = profile_paths[profile]
+                else:  # Accept already-open forms from older admin pages.
+                    qr_only = data.get("qr_only") == "on"
+                    key_qr = data.get("key_qr") == "on"
+                    key_password = data.get("key_password") == "on"
                 if not (qr_only or key_qr or key_password):
                     return self.html(400, "Not valid", flash_html("Select at least one SSH login path."), s)
                 self.start_change(s, "changing the SSH login policy",
@@ -1881,16 +1928,43 @@ def make_handler(app: WebApp):
                 return
             if name == "ssh_user_policy":
                 username = (data.get("user") or "").strip()
-                inherit = data.get("inherit") == "on"
-                qr_only = data.get("qr_only") == "on"
-                key_qr = data.get("key_qr") == "on"
-                key_password = data.get("key_password") == "on"
-                blocked = data.get("blocked") == "on"
+                profile = data.get("profile")
+                if profile is not None:
+                    profile_paths = {
+                        "qr_only": (True, False, False),
+                        "key_qr": (False, True, False),
+                        "key_password": (False, False, True),
+                        "key_qr_password": (False, True, True),
+                        "qr_password": (True, False, True),
+                        "qr_key_qr": (True, True, False),
+                        "all_paths": (True, True, True),
+                    }
+                    if profile == "inherit":
+                        inherit, qr_only, key_qr, key_password, blocked = True, False, False, False, False
+                    elif profile == "blocked":
+                        inherit, qr_only, key_qr, key_password, blocked = False, False, False, False, True
+                    elif profile in profile_paths:
+                        inherit, blocked = False, False
+                        qr_only, key_qr, key_password = profile_paths[profile]
+                    elif profile == "standard":
+                        inherit, qr_only, key_qr, key_password, blocked = False, False, False, False, False
+                    else:
+                        return self.html(400, "Not valid", flash_html("Choose one of the listed SSH access profiles."), s)
+                else:  # Accept already-open forms from older admin pages.
+                    inherit = data.get("inherit") == "on"
+                    qr_only = data.get("qr_only") == "on"
+                    key_qr = data.get("key_qr") == "on"
+                    key_password = data.get("key_password") == "on"
+                    blocked = data.get("blocked") == "on"
                 if username not in interactive_accounts():
                     return self.html(400, "Not valid", flash_html("Choose an interactive account on this computer."), s)
+                if username in ssh_qr_group_members() and profile == "standard":
+                    return self.html(400, "Not valid", flash_html("For Thessley-controlled accounts, choose a phone profile, a key-and-password profile, inherit, or block SSH."), s)
                 if username not in ssh_qr_group_members():
-                    if inherit or qr_only or key_qr or key_password:
+                    if profile is None and (inherit or qr_only or key_qr or key_password):
                         return self.html(400, "Not valid", flash_html("Accounts outside thessley-ssh can only be blocked or unblocked here."), s)
+                    if profile is not None and profile not in ("standard", "blocked"):
+                        return self.html(400, "Not valid", flash_html("Accounts outside thessley-ssh can only use standard SSH or be blocked."), s)
                     self.start_change(s, f"changing SSH access for {username}",
                                       app.change_ssh_user_blocked(username, blocked))
                     return

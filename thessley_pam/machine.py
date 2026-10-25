@@ -6,6 +6,8 @@ import json
 import re
 import socket
 import subprocess
+import threading
+import time
 
 
 def machine_id() -> str:
@@ -33,20 +35,62 @@ _VPN_IFACE = re.compile(r"^(?:tun|tap|wg|tailscale|zt|vpn|ovpn|thessley)", re.IG
 _VIRTUAL_IFACE = re.compile(r"^(?:docker|br-|veth|virbr|podman|cni)", re.IGNORECASE)
 _PRIVATE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
+_INTERFACE_CACHE: tuple[float, list[dict] | None] = (0.0, None)
+_INTERFACE_CACHE_LOCK = threading.Lock()
+_INTERFACE_REFRESHING = False
 
 
-def interface_networks(kind: str) -> list[str]:
-    """Discover directly attached local or VPN networks from active Linux interfaces."""
-    if kind not in ("local", "vpn"):
-        raise ValueError("Network kind must be 'local' or 'vpn'.")
+def _read_interface_snapshot() -> list[dict]:
+    """Read active interface addresses once and cache the shared snapshot."""
+    global _INTERFACE_CACHE
     try:
         result = subprocess.run(["ip", "-j", "address", "show"], stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=3, check=False)
         links = json.loads(result.stdout) if result.returncode == 0 else []
     except (OSError, subprocess.TimeoutExpired, ValueError):
-        return []
+        raise
+    if not isinstance(links, list):
+        links = []
+    with _INTERFACE_CACHE_LOCK:
+        _INTERFACE_CACHE = (time.monotonic(), links)
+    return links
+
+
+def _refresh_interface_snapshot_background() -> None:
+    global _INTERFACE_REFRESHING
+    try:
+        _read_interface_snapshot()
+    except Exception:
+        pass  # Keep the last known network list usable if a refresh fails.
+    finally:
+        with _INTERFACE_CACHE_LOCK:
+            _INTERFACE_REFRESHING = False
+
+
+def _interface_snapshot() -> list[dict]:
+    global _INTERFACE_REFRESHING
+    with _INTERFACE_CACHE_LOCK:
+        cached_at, cached = _INTERFACE_CACHE
+        if cached is not None:
+            if time.monotonic() - cached_at >= 60 and not _INTERFACE_REFRESHING:
+                _INTERFACE_REFRESHING = True
+                threading.Thread(target=_refresh_interface_snapshot_background, daemon=True).start()
+            return list(cached)
+    try:
+        return _read_interface_snapshot()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        with _INTERFACE_CACHE_LOCK:
+            _, cached = _INTERFACE_CACHE
+        return list(cached) if cached is not None else []
+
+
+def interface_networks(kind: str) -> list[str]:
+    """Return cached local or VPN networks, refreshing stale interface data in background."""
+    if kind not in ("local", "vpn"):
+        raise ValueError("Network kind must be 'local' or 'vpn'.")
+    links = _interface_snapshot()
     networks = set()
-    for link in links if isinstance(links, list) else []:
+    for link in links:
         name = str(link.get("ifname", ""))
         is_vpn = bool(_VPN_IFACE.match(name))
         if name == "lo" or (kind == "vpn") != is_vpn or (kind == "local" and _VIRTUAL_IFACE.match(name)):
