@@ -34,6 +34,11 @@ systemd service state under `/var/backups/thessley-pam-install-*`, and restores 
 health check fails. It never edits `/etc/pam.d` or SSH policy: the helper runs as root, so it must not live in a directory
 anyone else can write. Keep the printed backup path until the installation has been verified.
 
+For an interactive Ubuntu/Debian setup, `sudo ./guided-install.sh` checks the clock diagnostically, updates package lists,
+installs dependencies, and asks about optional integrations. A UTC mismatch or unavailable web-time comparison is a warning,
+not an install blocker. APT still verifies signed Release metadata dates and may refuse genuinely stale system time; do not
+disable those checks. Phone approvals use a short freshness window, so synchronize the phone and computer clocks.
+
 The installer prints an informational UTC clock comparison when the network is available; a mismatch or unavailable
 comparison does not block installation, and the system time zone is irrelevant. Phone approvals use a short freshness
 window, so the computer and phone clocks still need to be synchronized. APT validates signed repository metadata dates
@@ -107,3 +112,4 @@ They use a fake phone and temporary directories; no root and no real PAM. Anythi
 - A phone pass (ssh) is tied to the user, the service and the client's address, **not** to the ssh key: see
   [docs/SSH.md](docs/SSH.md).
 - The phone step is only as strong as the phone: a lost phone must be removed here (`thessley-pam remove`) and in the app.
+- The Linux APT signing key and release procedure are documented in [docs/RELEASING-LINUX.md](docs/RELEASING-LINUX.md).

@@ -16,7 +16,8 @@ command -v systemctl >/dev/null || { echo "systemd is required by this installer
 
 # Clock comparison is diagnostic only. Do not let a single web server's Date
 # header block installation or imply that the local clock is necessarily wrong.
-python3 - <<'PY'
+if [ "${THESSLEY_CLOCK_DIAGNOSTIC_DONE:-0}" != 1 ]; then
+    python3 - <<'PY'
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.request import Request, urlopen
@@ -44,6 +45,7 @@ try:
 except Exception as exc:
     print(f"WARNING: clock comparison unavailable ({exc}); continuing installation.")
 PY
+fi
 
 src=$(cd -- "$(dirname -- "$0")" && pwd)
 lib=/usr/local/lib/thessley-pam
