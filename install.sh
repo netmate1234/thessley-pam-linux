@@ -14,6 +14,37 @@ python3 -c 'import cryptography' 2>/dev/null || { echo "Missing python3-cryptogr
 python3 -c 'import asn1crypto' 2>/dev/null || { echo "Missing python3-asn1crypto (TPM certificate support): sudo apt install python3-asn1crypto" >&2; exit 1; }
 command -v systemctl >/dev/null || { echo "systemd is required by this installer." >&2; exit 1; }
 
+# Clock comparison is diagnostic only. Do not let a single web server's Date
+# header block installation or imply that the local clock is necessarily wrong.
+python3 - <<'PY'
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.request import Request, urlopen
+
+url = "https://wp-opsec.eagleeye-intelligence.com/"
+try:
+    request = Request(url, method="HEAD", headers={"Cache-Control": "no-cache"})
+    with urlopen(request, timeout=8) as response:
+        header = response.headers.get("Date")
+    if not header:
+        raise RuntimeError("the HTTPS server returned no Date header")
+    reference = parsedate_to_datetime(header).astimezone(timezone.utc)
+    local = datetime.now(timezone.utc)
+    delta = round((local - reference).total_seconds())
+    print(
+        "Clock diagnostic (informational): system UTC "
+        f"{local:%Y-%m-%d %H:%M:%S}; reference HTTP Date UTC "
+        f"{reference:%Y-%m-%d %H:%M:%S}; difference {delta}s."
+    )
+    if abs(delta) > 60:
+        print(
+            "WARNING: continuing installation. This comparison cannot tell which clock is inaccurate; "
+            "time-zone settings are not part of it."
+        )
+except Exception as exc:
+    print(f"WARNING: clock comparison unavailable ({exc}); continuing installation.")
+PY
+
 src=$(cd -- "$(dirname -- "$0")" && pwd)
 lib=/usr/local/lib/thessley-pam
 bin=/usr/local/sbin/thessley-pam

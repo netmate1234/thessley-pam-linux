@@ -34,6 +34,12 @@ systemd service state under `/var/backups/thessley-pam-install-*`, and restores 
 health check fails. It never edits `/etc/pam.d` or SSH policy: the helper runs as root, so it must not live in a directory
 anyone else can write. Keep the printed backup path until the installation has been verified.
 
+The installer prints an informational UTC clock comparison when the network is available; a mismatch or unavailable
+comparison does not block installation, and the system time zone is irrelevant. Phone approvals use a short freshness
+window, so the computer and phone clocks still need to be synchronized. APT validates signed repository metadata dates
+before this installer runs; if `apt update` says a Release file is not valid yet or has expired, sync system time with
+`sudo timedatectl set-ntp true` and retry. Do not disable APT signature or Release-date validation.
+
 ### `sudo`
 
 Add to `/etc/pam.d/sudo`, right after `@include common-auth`:

@@ -281,4 +281,5 @@ was run on a throwaway user before any real account was added.
 | The phone is not asked although it should be | A valid pass exists (`thessley-pam passes`), or the connection comes from an exempted address |
 | The phone is asked every time | `grace` is 0 for `sshd`, or each login comes from a different address |
 | `Permission denied (keyboard-interactive)` although a pass exists | The client uses `BatchMode=yes`; use `-o BatchMode=no` |
+| “Device clock is off by more than a minute” | Synchronize the phone and Linux system clocks. Their time zones may differ; freshness validation compares UTC timestamps. |
 | Logs | `sudo journalctl -t thessley-pam` and `sudo journalctl -u ssh` |
