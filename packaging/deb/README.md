@@ -51,7 +51,7 @@ Create a dedicated OpenPGP signing key and keep its private key on the release
 machine. Export only the public key as `thessley-archive-keyring.gpg`. Build a
 package and signed repository with:
 
-    packaging/deb/build-repo.sh 0.1.1 /tmp/thessley-apt-repo SIGNING_KEY_ID
+    packaging/deb/build-repo.sh 0.1.2 /tmp/thessley-apt-repo SIGNING_KEY_ID
 
 The repository signing key fingerprint is:
 `563A40578A64324AC1EB05475B76886E9CDB7C03`. The release workstation's private
