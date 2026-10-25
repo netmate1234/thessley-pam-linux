@@ -13,7 +13,7 @@ set -eu
 [ -x /usr/local/lib/thessley-pam/pam-helper ] || { echo "Run install.sh first." >&2; exit 1; }
 python3 -c 'import gi; gi.require_version("Adw", "1"); from gi.repository import Adw' 2>/dev/null \
     || { echo "Missing GTK 4 / libadwaita for Python: sudo apt install python3-gi gir1.2-adw-1" >&2; exit 1; }
-command -v pkexec >/dev/null || { echo "Missing pkexec: sudo apt install policykit-1" >&2; exit 1; }
+command -v pkexec >/dev/null || { echo "Missing pkexec. Install a PolicyKit package that provides pkexec (on current Ubuntu/Debian releases: sudo apt install pkexec), then rerun this script." >&2; exit 1; }
 
 src=$(cd "$(dirname "$0")" && pwd)
 lib=/usr/local/lib/thessley-pam

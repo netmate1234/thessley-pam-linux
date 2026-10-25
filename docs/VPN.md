@@ -30,6 +30,27 @@ the client shows nothing while it waits, so the link has to be taken from elsewh
 
 ## Install
 
+The Linux guided installer can create a **new** OpenVPN server configured for Thessley QR approval. Choose that option from
+`sudo ./guided-install.sh` (or `sudo thessley-pam-install` from the APT package). It supports Ubuntu 24.04 and 26.04 LTS,
+asks for the public host, approving account, tunnel range, UDP port, and client label. It detects a private connected LAN subnet
+from the default-route interface, chooses a tunnel default that does not overlap that subnet, and lets you override either range
+or choose `none` for LAN routing. Public cloud-facing subnets are not assumed to be LANs. The LAN range must not overlap the VPN
+tunnel. It then creates a root-only CA key, server instance, approval service, and first client profile. The CA private key is
+unencrypted on disk so web key creation and revocation can run unattended, matching the OPI5 setup. The key is owned by root,
+mode 0600, in a root-only directory; this relies on the server's root account and filesystem protection instead of a CA passphrase.
+If you have an older encrypted CA, run `sudo bash /opt/thessley-pam-linux/migrate-vpn-ca-unencrypted.sh` once. It asks for the
+current passphrase, verifies the key matches its CA certificate, keeps a root-only backup of the encrypted key, and replaces only
+the key file with the same unencrypted key. If a run stops after creating the CA but before installing the server config, rerun
+the installer; it preserves and resumes the CA. It refuses
+to overwrite an existing Thessley server config or approval service.
+The VPN approval and OpenVPN services are enabled before the phone-enrollment prompt. If enrollment is interrupted, VPN approval
+stays enabled, and the web page can still create a client key; VPN login itself remains refused until a phone is associated with
+this VPN host.
+The setup can add only the required UDP and TCP allow rules when UFW is already active; it does not enable UFW or change router
+settings. Forward the shown UDP port and TCP 47830 on your router before connecting from outside.
+
+The manual steps below are for an already configured OpenVPN server or when you want to configure each piece yourself.
+
     sudo ./install-vpn.sh
     sudo thessley-pam vpn public-host vpn.example.org      # the name or address a phone outside your network connects to
     sudo thessley-pam vpn on
@@ -46,7 +67,7 @@ The device checks the server's certificate fingerprint, which is in the link, so
 warns once about the QR page's self-signed certificate: the page shows nothing secret (the QR code only helps your own
 device approve).
 
-Settings: `vpn public-host NAME`, `vpn page-port N`, `vpn wait SECONDS` (approval window, default 180), `vpn group GROUP` (who
+Settings: `vpn public-host NAME`, `vpn server-port N` (the OpenVPN UDP port, default 1194), `vpn page-port N`, `vpn wait SECONDS` (approval window, default 180), `vpn group GROUP` (who
 may use the daemon's socket: OpenVPN's group; default `nogroup`).
 
 ## Enrol your phone or desktop app for the VPN

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Persistent, one-shot rollback for manual SSH/PAM configuration changes.
+# Persistent, one-shot rollback for SSH/PAM login policy changes.
 # The calendar timer survives a reboot; the snapshot and this helper are root-only.
 set -Eeuo pipefail
 
@@ -11,6 +11,16 @@ readonly TIMER_PATH=$UNIT_DIR/$TIMER_NAME
 readonly SERVICE_PATH=$UNIT_DIR/$SERVICE_NAME
 readonly STATE_DIR=/var/lib/thessley-ssh-config-rollback
 readonly ACTIVE_BACKUP=$STATE_DIR/active-backup
+readonly -a SNAPSHOT_PATHS=(
+    /etc/ssh/sshd_config
+    /etc/ssh/sshd_config.d
+    /etc/pam.d/sshd
+    /etc/thessley-pam/ssh-login-mode
+    /etc/thessley-pam/ssh-policy-failure
+    /etc/thessley-pam/ssh-users
+    /etc/thessley-pam/config.json
+    /etc/ssh/sshd_config.d/90-thessley-deny-users.conf
+)
 
 die() { echo "Thessley SSH rollback: $*" >&2; exit 1; }
 
@@ -93,9 +103,8 @@ arm() {
     chmod 0700 "$backup"
     trap arm_cleanup EXIT
     install -d -o root -g root -m 0700 "$backup/files" "$STATE_DIR"
-    snapshot_one "$backup" /etc/ssh/sshd_config
-    snapshot_one "$backup" /etc/ssh/sshd_config.d
-    snapshot_one "$backup" /etc/pam.d/sshd
+    local path
+    for path in "${SNAPSHOT_PATHS[@]}"; do snapshot_one "$backup" "$path"; done
     printf '%s\n' "$ssh_service" > "$backup/ssh-service"
 
     now=$(date +%s)
@@ -127,7 +136,7 @@ arm() {
     trap - EXIT
 
     echo "Rollback timer is active: $deadline / $deadline_utc."
-    echo "It restores /etc/ssh/sshd_config, /etc/ssh/sshd_config.d, and /etc/pam.d/sshd."
+    echo "It restores SSH/PAM configuration and Thessley SSH login policies (not phone keys, VPN settings, or the whole app)."
     echo "Keep this SSH session open. After a fresh SSH login succeeds, cancel with: sudo $SCRIPT_PATH cancel"
     echo "Snapshot retained at $backup"
 }
@@ -142,7 +151,7 @@ restore() {
     [[ $(stat -c '%u' "$backup") == 0 && ! -L $backup ]] \
         || die 'rollback snapshot must be a root-owned real directory.'
     chmod 0700 "$backup"
-    for path in /etc/ssh/sshd_config /etc/ssh/sshd_config.d /etc/pam.d/sshd; do
+    for path in "${SNAPSHOT_PATHS[@]}"; do
         restore_one "$backup" "$path" || failed=1
     done
     if (( failed )); then
@@ -173,7 +182,7 @@ cancel() {
     fi
     cleanup_units
     rm -f -- "$ACTIVE_BACKUP"
-    echo 'Rollback timer cancelled; no SSH/PAM files were changed by this command.'
+    echo 'Rollback timer cancelled; no SSH/PAM policy files were changed by this command.'
     echo 'Keep the current session open until a separate fresh SSH login has succeeded.'
     [[ -n $backup ]] && echo "Snapshot retained at $backup"
 }

@@ -210,6 +210,7 @@ class WebApp:
             for fid in [k for k, f in self.flows.items() if t - f.created > FLOW_KEEP_SECONDS]:
                 self.flows[fid].cancel.set()
                 self.flows[fid].answered.set()
+                self.flows[fid].on_approved = None
                 del self.flows[fid]
             for token in [k for k, item in self.vpn_downloads.items() if item[3] <= t]:
                 del self.vpn_downloads[token]
@@ -296,6 +297,8 @@ class WebApp:
             rc = pam.REFUSED
         text = "\n".join(flow.lines)
         flow.state = "approved" if rc == pam.OK else ("timeout" if "no answer" in text else "refused")
+        if flow.state != "approved":
+            flow.on_approved = None
 
     def usable(self, user: str) -> bool:
         """An account that exists and has at least one device that may approve (pam.run would let anyone else straight in)."""
@@ -372,6 +375,8 @@ class WebApp:
                     flow.result_url, flow.flash = flow.on_approved()
                 except Exception as exc:
                     flow.result_url, flow.flash = "/keys", f"That did not work: {exc}"
+                finally:
+                    flow.on_approved = None
             return flow.result_url, flow.flash
 
     def new_session(self, user: str) -> Session:
@@ -513,6 +518,20 @@ class WebApp:
             grants.set_ssh_user_blocked(username, blocked)
             action = "blocked" if blocked else "unblocked"
             return "/admin", f"SSH access {action} for {username}. Existing SSH sessions remain open."
+        return run
+
+    def change_ssh_rollback(self, action: str, minutes: int = 10):
+        def run():
+            helper = "/usr/local/sbin/thessley-ssh-config-rollback"
+            args = [helper, action]
+            if action == "arm":
+                args.append(str(minutes))
+            result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True,
+                                    text=True, timeout=20, check=False)
+            output = (result.stdout or result.stderr).strip()
+            if result.returncode:
+                raise RuntimeError(output[-800:] or "The rollback helper failed without a message.")
+            return "/admin", output or "Rollback action completed."
         return run
 
     # -- per-key details
@@ -842,8 +861,8 @@ def login_page(message: str = "") -> str:
     return (flash_html(message) + '<div class="card"><h2 style="margin-top:0">Sign in</h2>'
             '<p class="dim">Type your account name on this computer. You will approve the sign-in on your device or in the '
             'Thessley Passkey app, with a QR code or a link. No password.</p>'
-            '<form method="post" action="/login"><label for="user" class="dim">Account name</label>'
-            '<input type="text" id="user" name="user" autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>'
+            '<form method="post" action="/login"><label for="user" class="dim">Account name (required)</label>'
+            '<input type="text" id="user" name="user" required autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>'
             '<div class="row"><button class="primary">Continue</button></div></form></div>')
 
 
@@ -941,16 +960,19 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
     def add_form(action: str, text: str) -> str:
         return (f'<form method="post" action="/keys/{action}"><input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
                 f'<input type="hidden" name="user" value="{esc(user)}"><div class="row"><button class="primary">{esc(text)}</button></div></form>')
-    note = ('<p class="dim">Changes ask your device for a fresh approval first, so nobody who only has this browser can change them.</p>')
+    note = ('<p class="dim">Sensitive changes ask your device for fresh approval. VPN phone enrollment uses the signed-in, phone-approved session and one enrollment QR.</p>')
     vpn_html = ""
     if vpn_available():
         vpn_host = grants.vpn_settings()["public_host"]
         vpn_note = ("<p class='dim'>Devices enrolled for the VPN approve each VPN login after the client certificate. "
                     "Every connection asks for fresh approval; VPN logins do not use passes or grace time. "
-                    "Add a device here, or on the computer with <span class='mono'>sudo thessley-pam vpn enroll</span>.</p>")
+                    "To add a phone here, scan the single enrollment QR, sign on that phone, then confirm the matching code in this browser. "
+                    "The signed-in web session authorizes enrollment. You can also enroll on the computer with "
+                    "<span class='mono'>sudo thessley-pam vpn enroll</span>.</p>")
         profiles = vpn_client_profiles(user)
         revoked_profiles = vpn_revoked_profiles(user)
-        can_revoke = vpn_revocation_available()
+        ca_ready = vpn_ca_key_unencrypted()
+        can_revoke = vpn_revocation_available() and ca_ready
         profile_note = ("<p class='dim'>Every download requires a fresh QR phone approval, even when you are already signed in. Each file contains "
                         "that device's private key and the VPN shared key, plus the account name and a placeholder VPN password so the client "
                         "does not prompt for them. The VPN server ignores that password. Store the profile securely and import it only on that device.</p>"
@@ -963,7 +985,8 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
             + '<button class="primary">Approve and download .ovpn profile</button></form>'
             + (f'<form method="post" action="/keys/vpn-revoke" class="row" onsubmit="return confirm(\'Revoke this certificate and disconnect this device from the VPN?\')">'
                f'<input type="hidden" name="csrf" value="{esc(viewer.csrf)}"><input type="hidden" name="user" value="{esc(user)}">'
-               f'<input type="hidden" name="certificate" value="{esc(cn)}"><button class="danger">Revoke certificate</button></form>'
+               f'<input type="hidden" name="certificate" value="{esc(cn)}">'
+               '<button class="danger">Revoke certificate</button></form>'
                if can_revoke else "") + '</div>'
             for cn, label in profiles
         )
@@ -972,13 +995,16 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
         create_profile = (
             f'<form method="post" action="/keys/vpn-create" class="row"><input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
             f'<input type="hidden" name="user" value="{esc(user)}">'
-            '<label for="vpn-device-name">New device name</label>'
+            '<label for="vpn-device-name">New device name (required)</label>'
             '<input id="vpn-device-name" name="device" required maxlength="32" pattern="[A-Za-z0-9_.-]{1,32}" '
-            'placeholder="phone or laptop" autocomplete="off">'
+            'placeholder="phone or laptop" autocomplete="off" aria-describedby="vpn-device-name-help">'
+            '<span id="vpn-device-name-help" class="dim">Required. Enter a unique name for this device using 1–32 letters, digits, dots, underscores or hyphens.</span>'
             '<button class="primary">Approve and create VPN key</button></form>'
-            '<p class="dim">Use a different name for each device (letters, digits, dot, underscore or hyphen; up to 32 characters). '
-            'Fresh phone approval creates the key and downloads its profile once. The profile contains a private key; keep it secure. '
-            'Downloading an existing profile again asks for another fresh approval.</p>')
+            '<p class="dim">A fresh phone approval creates the key and downloads its profile once. The certificate authority key is readable only by root on this computer. The profile contains a private key; keep it secure. '
+            'Downloading an existing profile again asks for another fresh approval.</p>'
+            if ca_ready else
+            '<p class="dim">To use VPN key creation without a passphrase prompt, first convert the encrypted CA key to an unencrypted root-only key. This preserves the CA and its certificates, and keeps an encrypted backup:</p>'
+            '<pre><code>sudo bash /opt/thessley-pam-linux/migrate-vpn-ca-unencrypted.sh</code></pre>')
         revoke_note = ("<p class='dim'>Revoking requires a fresh phone approval. It blocks future connections and disconnects the selected device.</p>"
                        if can_revoke else
                        "<p class='dim'>Certificate revocation is unavailable until CRL enforcement and the local OpenVPN management socket are configured.</p>")
@@ -1104,7 +1130,9 @@ def make_vpn_profile(user: str, cn: str) -> tuple[bytes, str] | None:
         return None
     # The server uses the username to match the certificate to its enrolled account. The
     # password is deliberately a placeholder: QR phone approval is the login check.
-    profile = (b"client\ndev tun\nproto udp\nremote " + host.encode("ascii") + b" 1194\n"
+    server_port = grants.vpn_settings()["server_port"]
+    profile = (b"client\ndev tun\nproto udp\nremote " + host.encode("ascii") + b" "
+               + str(server_port).encode("ascii") + b"\n"
                b"remote-cert-tls server\n<auth-user-pass>\n" + user.encode("ascii") + b"\nthessley-qr-login\n</auth-user-pass>\n"
                b"auth-nocache\n"
                b"data-ciphers AES-256-GCM:CHACHA20-POLY1305\n<ca>\n" + ca.rstrip() + b"\n</ca>\n<cert>\n"
@@ -1188,6 +1216,21 @@ def disconnect_vpn_certificate(cn: str) -> str | None:
         return None
 
 
+def vpn_ca_key_unencrypted() -> bool:
+    """Allow unattended signing only when the CA key is unencrypted and root-only."""
+    path = os.path.join(VPN_PKI, "private", "ca.key")
+    try:
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or info.st_mode & 0o077:
+            return False
+        result = subprocess.run(["openssl", "pkey", "-in", path, "-passin", "pass:", "-noout"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=15, check=False, close_fds=True)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def revoke_vpn_certificate(user: str, cn: str) -> tuple[str, str] | str:
     """Revoke one owned client certificate, refresh the enforced CRL, then disconnect only that client."""
     if not vpn_revocation_available():
@@ -1196,6 +1239,8 @@ def revoke_vpn_certificate(user: str, cn: str) -> tuple[str, str] | str:
         return "That VPN certificate is invalid. No certificate was changed."
     if cn != user and not vpn.certificate_belongs_to(cn, user):
         return "That VPN certificate does not belong to this account. No certificate was changed."
+    if not vpn_ca_key_unencrypted():
+        return "The CA key is encrypted or not root-only. Migrate it for unattended web signing first."
     with VPN_EASYRSA_LOCK:
         if vpn_certificate_status(cn) != "V":
             return "That VPN certificate is not active. No certificate was changed."
@@ -1215,7 +1260,7 @@ def revoke_vpn_certificate(user: str, cn: str) -> tuple[str, str] | str:
                 return "The VPN certificate could not be revoked completely. Ask an administrator to check the server."
             if result.returncode != 0:
                 syslog_info(f"web VPN revocation command failed for {cn}: {result.stderr[-800:].strip()}")
-                return "The VPN certificate could not be revoked completely. Ask an administrator to check the server."
+                return "The VPN certificate could not be revoked completely. Check the server journal."
         try:
             crl = x509.load_pem_x509_crl(read_vpn_file(VPN_CRL))
             if vpn_certificate_status(cn) != "R" or not any(item.serial_number == serial for item in crl):
@@ -1243,6 +1288,8 @@ def create_vpn_client_profile(user: str, device: str) -> tuple[bytes, str] | str
         return "The VPN public host is not configured. No VPN key was created."
     if not os.path.isfile(os.path.join(VPN_EASYRSA, "easyrsa")) or not os.path.isdir(os.path.join(VPN_PKI, "issued")):
         return "The VPN certificate authority is unavailable. No VPN key was created."
+    if not vpn_ca_key_unencrypted():
+        return "The CA key is encrypted or not root-only. Migrate it for unattended web signing first."
 
     cn = user + "@" + device
     cert_path = os.path.join(VPN_PKI, "issued", cn + ".crt")
@@ -1255,11 +1302,14 @@ def create_vpn_client_profile(user: str, device: str) -> tuple[bytes, str] | str
                     "EASYRSA_CERT_EXPIRE": "825"})
         try:
             result = subprocess.run(["./easyrsa", "build-client-full", cn, "nopass"], cwd=VPN_EASYRSA,
-                                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, timeout=90, check=False, close_fds=True)
-        except (OSError, subprocess.SubprocessError):
+                                    env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                    text=True, timeout=90, check=False, close_fds=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            syslog_info(f"web VPN certificate creation failed for {cn}: {type(exc).__name__}: {exc}")
             return "The VPN certificate could not be created. No profile was downloaded. Check the server logs."
         if result.returncode != 0:
+            detail = (result.stderr + "\n" + result.stdout).strip()[-1200:]
+            syslog_info(f"web VPN certificate creation failed for {cn} (exit {result.returncode}): {detail}")
             return "The VPN certificate could not be created. No profile was downloaded. Check the server logs."
         package = make_vpn_profile(user, cn)
         if package is None:
@@ -1338,6 +1388,39 @@ def admin_page(viewer: Session, flash: str) -> str:
     on = lambda flag: "on" if flag else "off"  # noqa: E731
     hidden = f'<input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
 
+    rollback_helper = "/usr/local/sbin/thessley-ssh-config-rollback"
+    try:
+        result = subprocess.run([rollback_helper, "status"], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=3, check=False)
+        rollback_status = (result.stdout or result.stderr).strip()
+        if result.returncode:
+            rollback_status = "Could not check the SSH/PAM rollback timer: " + (rollback_status[-500:] or "helper error")
+    except (OSError, subprocess.SubprocessError) as exc:
+        rollback_status = f"Could not check the SSH/PAM rollback timer: {exc}"
+    rollback_pending = ("No Thessley SSH configuration rollback timer is pending." not in rollback_status
+                       and not rollback_status.startswith("Could not check"))
+    rollback = (
+        '<section class="admin-rollback"><h2>SSH / PAM setup rollback</h2>'
+        '<div class="card"><strong>Rollback timer</strong>'
+        f'<pre class="dim" style="white-space:pre-wrap;overflow-wrap:anywhere">{esc(rollback_status)}</pre>'
+        '<p class="dim">This timer restores SSH and PAM configuration plus Thessley SSH login policies if a change prevents a new SSH login. '
+        'It does not roll back phone keys, VPN configuration, or the whole Thessley app. Keep this browser and your current SSH session open while testing.</p>'
+        + (f'<form method="post" action="/admin/set" class="row">{hidden}'
+           '<input type="hidden" name="name" value="ssh_rollback">'
+           '<input type="hidden" name="action" value="cancel">'
+           '<button>Keep current SSH setup and stop rollback</button></form>' if rollback_pending else
+           (f'<p class="dim">Rollback controls are unavailable until the timer status can be read.</p>'
+            if rollback_status.startswith("Could not check") else
+           f'<form method="post" action="/admin/set" class="row">{hidden}'
+           '<input type="hidden" name="name" value="ssh_rollback">'
+           '<input type="hidden" name="action" value="arm">'
+           '<label for="ssh-rollback-minutes">Rollback after</label>'
+           '<select id="ssh-rollback-minutes" name="minutes">'
+           '<option value="10" selected>10 minutes</option><option value="15">15 minutes</option>'
+           '<option value="30">30 minutes</option><option value="60">60 minutes</option></select> '
+           '<button>Arm SSH rollback</button></form>'))
+        + '</div></section>')
+
     def toggle(name: str, label: str, state: bool, explain: str) -> str:
         return (f'<div class="card"><strong>{esc(label)}</strong>: <span class="{"ok" if state else "bad"}">{on(state)}</span>'
                 f'<div class="dim">{esc(explain)}</div><form method="post" action="/admin/set" class="row">{hidden}'
@@ -1365,7 +1448,7 @@ def admin_page(viewer: Session, flash: str) -> str:
         + '<div class="ssh-source-options">'
         + f'<label><input id="ssh-source-any" type="checkbox" name="all_ips" value="on" '
           f'{"checked" if ssh_source_modes == ["any"] else ""} '
-          'onchange="if(this.checked)document.querySelectorAll(\'.ssh-source-restrict\').forEach(x=>x.checked=false)"> All IPs</label>'
+          'onchange="if(this.checked){document.querySelectorAll(\'.ssh-source-restrict\').forEach(x=>x.checked=false);document.getElementById(\'ssh-source-addresses\').required=false}"> All IPs</label>'
         + f'<label><input class="ssh-source-restrict" type="checkbox" name="local" value="on" '
           f'{"checked" if "local" in ssh_source_modes else ""} '
           'onchange="if(this.checked)document.getElementById(\'ssh-source-any\').checked=false"> Local networks</label>'
@@ -1374,12 +1457,13 @@ def admin_page(viewer: Session, flash: str) -> str:
           'onchange="if(this.checked)document.getElementById(\'ssh-source-any\').checked=false"> VPN networks</label>'
         + f'<label><input id="ssh-source-custom-check" class="ssh-source-restrict" type="checkbox" name="custom" value="on" '
           f'{"checked" if "custom" in ssh_source_modes else ""} '
-          'onchange="if(this.checked)document.getElementById(\'ssh-source-any\').checked=false"> Chosen list</label></div>'
-        + '<label for="ssh-source-custom">Allowed IP addresses or CIDR ranges for Chosen list</label>'
+          'onchange="if(this.checked)document.getElementById(\'ssh-source-any\').checked=false;document.getElementById(\'ssh-source-addresses\').required=this.checked"> Chosen list</label></div>'
+        + '<label for="ssh-source-addresses">Allowed IP addresses or CIDR ranges for Chosen list (required when selected)</label>'
         + '<div id="ssh-source-custom">'
-        + f'<input type="text" name="addresses" value="{esc(", ".join(ssh_source_ips))}" '
+        + f'<input id="ssh-source-addresses" type="text" name="addresses" value="{esc(", ".join(ssh_source_ips))}" '
           'placeholder="Example: 203.0.113.7, 198.51.100.0/24" '
-          'aria-label="Allowed SSH client IP addresses or CIDR ranges"></div>'
+          f'{"required" if "custom" in ssh_source_modes else ""} aria-label="Allowed SSH client IP addresses or CIDR ranges" aria-describedby="ssh-source-addresses-help">'
+        + '<p id="ssh-source-addresses-help" class="dim">Required only if Chosen list is checked. Enter at least one IPv4 address or CIDR range.</p></div>'
         + f'<p class="dim">Detected local: {esc(", ".join(local_networks) or "none")}. '
           f'Detected VPN: {esc(", ".join(vpn_networks) or "none active")}. A source type with no active interface currently contributes no allowed addresses; other checked types still work.</p>'
         + '<button>Save SSH source IPs</button></form></div>')
@@ -1508,21 +1592,21 @@ def admin_page(viewer: Session, flash: str) -> str:
     grace = (f'<div class="card"><strong>How long one approval counts for ssh</strong>: {sshd_grace:g} h'
              f'<div class="dim">After one approval, logins from the configured IP scope need no new one for this long. 0 means every login asks.</div>'
              f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="grace">'
-             f'<input type="text" name="value" value="{sshd_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
+             f'<label for="ssh-grace-hours">Approval duration (hours, required)</label><input id="ssh-grace-hours" type="number" name="value" required min="0" max="720" step="0.1" value="{sshd_grace:g}" style="width:6rem"> hours <button>Change</button></form></div>')
     session = grants.web_settings()["session_minutes"]
     web_settings = grants.web_settings()
     grace += (f'<div class="card"><strong>Stay signed in to this page</strong>: {session} minutes without activity'
               f'<div class="dim">After this long without clicking anything you are signed out (always after 8 hours). '
               f'Applies from the next sign-in. 1 to 240 minutes.</div>'
               f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="session">'
-              f'<input type="text" name="value" value="{session}" style="width:6rem"> minutes <button>Change</button></form></div>')
+              f'<label for="web-session-minutes">Idle timeout (minutes, required)</label><input id="web-session-minutes" type="number" name="value" required min="1" max="240" step="1" value="{session}" style="width:6rem"> minutes <button>Change</button></form></div>')
     limits = (f'<div class="card"><strong>Web service resource limits</strong>'
               f'<div class="dim">Maximum simultaneous web requests and remembered source-IP rate-limit buckets. '
               f'When the bucket limit is reached, old buckets are expired/evicted. Current: {web_settings["max_connections"]} connections, '
               f'{web_settings["rate_limit_entries"]} IPs.</div>'
               f'<form method="post" action="/admin/set" class="row">{hidden}<input type="hidden" name="name" value="web_limits">'
-              f'<input type="number" name="connections" min="4" max="256" value="{web_settings["max_connections"]}" aria-label="Maximum concurrent connections"> connections '
-              f'<input type="number" name="buckets" min="64" max="100000" value="{web_settings["rate_limit_entries"]}" aria-label="Rate limit entries"> IP buckets '
+              f'<label for="web-max-connections">Maximum concurrent connections (required)</label><input id="web-max-connections" type="number" name="connections" required min="4" max="256" value="{web_settings["max_connections"]}" aria-label="Maximum concurrent connections"> connections '
+              f'<label for="web-rate-limit-buckets">Rate limit IP buckets (required)</label><input id="web-rate-limit-buckets" type="number" name="buckets" required min="64" max="100000" value="{web_settings["rate_limit_entries"]}" aria-label="Rate limit entries"> IP buckets '
               f'<button>Save limits</button></form></div>')
     web_host = "127.0.0.1" if web_settings["localhost_only"] else (web_settings["listen"] or machine.lan_ip())
     if web_host in ("0.0.0.0", "::"):
@@ -1546,7 +1630,7 @@ def admin_page(viewer: Session, flash: str) -> str:
                '<button>Save recovery behavior</button></form></div>')
     return (flash_html(flash) + "<h2>Settings for this computer</h2>"
             "<p class='dim'>Only administrators see this page. Every change asks your device for a fresh approval.</p>"
-            + users_section + ssh_policy + failure + limits + localhost_setting + journal_info + grace
+            + rollback + users_section + ssh_policy + failure + limits + localhost_setting + journal_info + grace
             + ssh_source_ip_setting
             + toggle("self_enroll", "Users may add their own device", grants.self_enroll_allowed(),
                      "thessley-pam enroll-me: the first device freely, more with an approval.")
@@ -1688,8 +1772,16 @@ def make_handler(app: WebApp):
                 f = self.flow_for(m.group(1), s)
                 if f is None or f.kind != "enroll":
                     return self.html(404, "Not found", flash_html("That request is no longer here."), s)
-                return self.html(200, "Add a device", wait_page(f, "{NONCE}", s, "Add a device",
-                                 "Scan the code with the new device's Thessley Passkey app, or open the link on the new app."), s)
+                vpn_enroll = f.description == "Add a VPN device"
+                heading = "Finish adding this VPN device" if vpn_enroll else "Finish adding this device"
+                note = ("This is the single QR for VPN phone enrollment. Open its link on the phone being enrolled and sign it. "
+                        "Then compare the six-digit code shown here with the phone and tap ‘The codes match’. The key is saved "
+                        "only after that confirmation."
+                        if vpn_enroll else
+                        "The first approval only authorizes enrollment. Scan this new QR or open its link on the phone being "
+                        "enrolled. When it signs, compare the six-digit code shown here with the phone and tap ‘The codes match’. "
+                        "The key is saved only after that confirmation.")
+                return self.html(200, heading, wait_page(f, "{NONCE}", s, heading, note), s)
             m = re.fullmatch(r"/keys/vpn-profile/([A-Za-z0-9_-]{40,50})", route)
             if m:
                 s = self.need_session()
@@ -1772,7 +1864,6 @@ def make_handler(app: WebApp):
                 certificate = data.get("certificate", "")
                 if certificate not in {cn for cn, _label in vpn_client_profiles(target)}:
                     return self.html(404, "Not found", flash_html("That active VPN certificate is unavailable."), s)
-
                 def revoke_certificate():
                     result = revoke_vpn_certificate(target, certificate)
                     if isinstance(result, str):
@@ -1802,7 +1893,6 @@ def make_handler(app: WebApp):
                 certificate = target + "@" + device
                 if any(cn == certificate for cn, _label in vpn_client_profiles(target)):
                     return self.html(409, "Device already exists", flash_html("That device name already has a VPN key. Choose a different name."), s)
-
                 def create_and_download():
                     result = create_vpn_client_profile(target, device)
                     if isinstance(result, str):
@@ -1866,7 +1956,14 @@ def make_handler(app: WebApp):
                 host = grants.vpn_settings()["public_host"]
                 if not host:
                     return self.html(400, "Not possible", flash_html("Set the VPN's public host first: sudo thessley-pam vpn public-host NAME"), s)
-                return self.start_change(s, f"adding a VPN device for {target}", app.change_begin_enroll(target, s.user, host), SERVICE_DEVICE)
+                # The signed-in web session was already phone-approved. Starting a second approval flow here produced a
+                # second QR on the same phone before the actual enrollment QR. Keep this operation bound to the user's
+                # authenticated session; the new key still must sign the enrollment challenge and the browser must confirm
+                # the matching pairing code before it is stored.
+                flow = app.start_enroll(target, owner=s.user, vpn_host=host)
+                if flow is None:
+                    return self.html(503, "Busy", flash_html("Could not start VPN phone enrollment. Try again in a minute."), s)
+                return self.redirect(f"/enroll/{flow.id}")
             known = {d["credential_id"]: d for d in store.devices(target)}
             if not CRED_RE.match(cred) or cred not in known:
                 return self.html(404, "Not found", flash_html("No such key."), s)
@@ -1902,6 +1999,23 @@ def make_handler(app: WebApp):
 
         def admin_action(self, data: dict, s: Session) -> None:
             name, value = data.get("name", ""), (data.get("value") or "").strip()
+            if name == "ssh_rollback":
+                action = data.get("action", "")
+                if action == "arm":
+                    try:
+                        minutes = int(data.get("minutes", ""))
+                    except ValueError:
+                        minutes = 0
+                    if minutes not in (10, 15, 30, 60):
+                        return self.html(400, "Not valid", flash_html("Choose a rollback timer from the list."), s)
+                    description = f"arming a {minutes}-minute SSH/PAM rollback timer"
+                elif action == "cancel":
+                    minutes = 10
+                    description = "keeping the current SSH/PAM setup and stopping its rollback timer"
+                else:
+                    return self.html(400, "Not valid", flash_html("Choose Arm or Keep current setup."), s)
+                self.start_change(s, description, app.change_ssh_rollback(action, minutes))
+                return
             if name == "ssh_policy":
                 profile = data.get("profile")
                 if profile is not None:
@@ -2034,7 +2148,12 @@ def make_handler(app: WebApp):
             """Why an enrolment ended without a new device, in words that say which of the cases it was."""
             text = "\n".join(f.lines)
             if "Timed out" in text:
-                return f"No device answered in {WEB_ENROLL_WAIT // 60} minutes, so nothing was added. Start again and scan the code in time."
+                if f.description == "Add a VPN device":
+                    return (f"No phone completed VPN enrollment within {WEB_ENROLL_WAIT // 60} minutes, so no key was saved. "
+                            "Open the single enrollment link below on the phone being added, sign it, then confirm the matching code here.")
+                return (f"The first phone approval succeeded, but the phone being enrolled did not finish this step within "
+                        f"{WEB_ENROLL_WAIT // 60} minutes. No device key was saved. Scan or open the enrollment link below "
+                        "on the phone being added, then compare the codes here and confirm that they match.")
             if "Cancelled" in text:
                 return "This was cancelled, so nothing was added."
             if "Not added." in text:

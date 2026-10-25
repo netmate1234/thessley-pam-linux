@@ -42,6 +42,10 @@ backup=/var/backups/thessley-pam-upgrade-$(date +%Y%m%d-%H%M%S)
 install -d -o root -g root -m 0700 "$backup"
 cp -a "$lib/thessley_pam" "$backup/thessley_pam"
 cp -a "$old_module" "$backup/pam_thessley_phone.so"
+if [[ -e /usr/local/sbin/thessley-ssh-config-rollback ]]; then
+    cp -a /usr/local/sbin/thessley-ssh-config-rollback "$backup/ssh-config-rollback"
+    : > "$backup/ssh-config-rollback-present"
+fi
 printf '%s\n' "$lib/thessley_pam" "$old_module" > "$backup/restore-paths.txt"
 if [[ -e "$web_dropin" ]]; then
     cp -a "$web_dropin" "$backup/web-ssh-dropin.conf"
@@ -69,6 +73,14 @@ rollback() {
             echo "Rollback could not restore the SSH PAM module at $old_module" >&2
             rollback_failed=1
         }
+        if [[ -e "$backup/ssh-config-rollback-present" ]]; then
+            cp -a "$backup/ssh-config-rollback" /usr/local/sbin/thessley-ssh-config-rollback || {
+                echo 'Rollback could not restore the SSH rollback helper.' >&2
+                rollback_failed=1
+            }
+        else
+            rm -f /usr/local/sbin/thessley-ssh-config-rollback || rollback_failed=1
+        fi
         if [[ -e "$backup/web-ssh-dropin-present" ]]; then
             install -d -o root -g root -m 0755 "$web_dropin_dir" || {
                 echo "Rollback could not recreate $web_dropin_dir" >&2
@@ -112,26 +124,28 @@ gcc -Wall -Wextra -Werror -O2 -fPIC -shared \
 
 applied=1
 install -o root -g root -m 0644 "$src/thessley_pam/web.py" "$lib/thessley_pam/web.py"
+install -o root -g root -m 0755 "$src/ssh-config-rollback.sh" /usr/local/sbin/thessley-ssh-config-rollback
 install -o root -g root -m 0644 "$src/thessley_pam/grants.py" "$lib/thessley_pam/grants.py"
 install -o root -g root -m 0644 "$src/thessley_pam/pam.py" "$lib/thessley_pam/pam.py"
 install -o root -g root -m 0644 "$src/thessley_pam/machine.py" "$lib/thessley_pam/machine.py"
 install -o root -g root -m 0644 "$tmp/pam_thessley_phone.so" "$old_module"
 find "$lib/thessley_pam" -name __pycache__ -type d -prune -exec rm -rf -- {} +
 install -d -o root -g root -m 0755 "$web_dropin_dir"
+install -d -o root -g root -m 0700 /var/lib/thessley-ssh-config-rollback
 cat > "$tmp/90-thessley-ssh-users.conf" <<'UNIT'
 [Service]
-ReadWritePaths=/etc/ssh/sshd_config.d
+ReadWritePaths=/etc/ssh/sshd_config.d /etc/systemd/system /var/lib/thessley-ssh-config-rollback /var/backups
 UNIT
 install -o root -g root -m 0644 "$tmp/90-thessley-ssh-users.conf" "$web_dropin"
 systemctl daemon-reload
 web_writable_paths=$(systemctl show thessley-pam-web.service --property=ReadWritePaths --value)
-if [[ " $web_writable_paths " != *" /etc/ssh/sshd_config.d "* ]]; then
-    echo "The web service did not load the managed SSH policy write path." >&2
+if [[ " $web_writable_paths " != *" /etc/ssh/sshd_config.d "* || " $web_writable_paths " != *" /etc/systemd/system "* || " $web_writable_paths " != *" /var/backups "* ]]; then
+    echo "The web service did not load the managed SSH and rollback write paths." >&2
     exit 1
 fi
 
 for service in "${services[@]}"; do systemctl restart "$service"; done
 echo "Per-user SSH controls installed. sshd_config, PAM login rules, firewall, and GNOME settings were not changed."
-echo "The admin web service can now manage its own DenyUsers fragment."
+echo "The admin web service can manage SSH account policy and the timed SSH/PAM rollback."
 echo "Backup: $backup"
 for service in "${services[@]}"; do systemctl --no-pager --full status "$service" | sed -n '1,3p'; done

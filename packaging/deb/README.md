@@ -2,7 +2,7 @@
 
 The published APT repository is served by the Orange Pi 5 at
 `https://wp-opsec.eagleeye-intelligence.com/wp-content/uploads/thessley-apt/`.
-The `thessley-pam-linux-installer` package targets Ubuntu 24.04 LTS on amd64 and
+The `thessley-pam-linux-installer` package targets Ubuntu 24.04 and 26.04 LTS on amd64 and
 arm64. It installs this source tree at `/opt/thessley-pam-linux`, the
 `thessley-pam-install` guided-setup command, and runtime dependencies. Installing
 the package does not start services, change firewall rules, or edit login policy.
@@ -22,14 +22,26 @@ After the repository is configured, install the package and launch the guided se
 
     sudo apt update && sudo apt install thessley-pam-linux-installer && sudo thessley-pam-install
 
-The guided setup installs the required shared approval service and asks about
-each optional integration separately. Every optional choice defaults to No.
-It does not edit `sshd_config`, SSH PAM policy, or OpenVPN server configuration.
+The guided setup installs the required shared approval service, enables the
+HTTPS web admin page by default (answer `n` to skip), and asks about other
+optional integrations. Those choices default to No. It does not edit
+`sshd_config`, SSH PAM policy, or existing OpenVPN server configuration. It
+can optionally create a new isolated OpenVPN server with Thessley QR approval
+on Ubuntu 24.04 or 26.04; the setup refuses to overwrite an
+existing Thessley VPN configuration or PKI. If setup stops after creating the
+CA, rerun it in an interactive terminal: it keeps the root-only CA and resumes
+the server and client signing steps. If upgrading an encrypted CA, run
+`sudo bash /opt/thessley-pam-linux/migrate-vpn-ca-unencrypted.sh` once; it
+prompts for the existing passphrase and retains a root-only encrypted backup.
+VPN approval is
+enabled before phone enrollment starts, so interrupting that step leaves the
+web VPN key controls available while VPN logins remain refused until a phone
+is associated with the VPN host.
 To run it directly from the source archive instead:
 
     sudo ./guided-install.sh
 
-The web admin service remains off unless you choose to enable it. Read the
+The HTTPS web admin page is enabled by default (answer `n` to skip). Read the
 component guides before using SSH, GNOME, or VPN integration. For SSH, keep the
 current session open, arm `ssh-config-rollback.sh`, verify a fresh login, and
 cancel the timer only after that login succeeds.
@@ -51,7 +63,7 @@ Create a dedicated OpenPGP signing key and keep its private key on the release
 machine. Export only the public key as `thessley-archive-keyring.gpg`. Build a
 package and signed repository with:
 
-    packaging/deb/build-repo.sh 0.1.2 /tmp/thessley-apt-repo SIGNING_KEY_ID
+    packaging/deb/build-repo.sh 0.1.10 /tmp/thessley-apt-repo SIGNING_KEY_ID
 
 The repository signing key fingerprint is:
 `563A40578A64324AC1EB05475B76886E9CDB7C03`. The release workstation's private

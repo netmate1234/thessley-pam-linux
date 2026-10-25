@@ -37,14 +37,22 @@ HOST="${HOST:-$(/usr/local/sbin/thessley-pam vpn status | sed -n 's/.*link host 
 cd "$PKI"
 export EASYRSA_BATCH=1 EASYRSA_ALGO=ec EASYRSA_CURVE=prime256v1
 if [ ! -f "pki/issued/$NAME.crt" ]; then
-  EASYRSA_CERT_EXPIRE=825 ./easyrsa build-client-full "$NAME" nopass >/dev/null 2>&1
+  if ! openssl pkey -in pki/private/ca.key -passin pass: -noout >/dev/null 2>&1; then
+    echo 'The CA key is encrypted. Run sudo bash /opt/thessley-pam-linux/migrate-vpn-ca-unencrypted.sh once.' >&2
+    exit 1
+  fi
+  EASYRSA_CERT_EXPIRE=825 ./easyrsa build-client-full "$NAME" nopass >/dev/null \
+    || { echo 'Could not sign the VPN certificate. Check the CA key and Easy-RSA status.' >&2; exit 1; }
 fi
 umask 077
+PORT=$(awk '$1 == "port" { print $2; exit }' /etc/openvpn/server/thessley.conf 2>/dev/null || true)
+PORT=${PORT:-1194}
+[[ $PORT =~ ^[0-9]{1,5}$ ]] && (( PORT >= 1 && PORT <= 65535 )) || { echo 'Invalid OpenVPN UDP port in server configuration.' >&2; exit 1; }
 cat > "$OUT" <<PROFILE
 client
 dev tun
 proto udp
-remote $HOST 1194
+remote $HOST $PORT
 remote-cert-tls server
 auth-user-pass
 auth-nocache

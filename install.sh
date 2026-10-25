@@ -51,6 +51,7 @@ src=$(cd -- "$(dirname -- "$0")" && pwd)
 lib=/usr/local/lib/thessley-pam
 bin=/usr/local/sbin/thessley-pam
 helper=/usr/local/lib/thessley-pam/pam-helper
+rollback_helper=/usr/local/sbin/thessley-ssh-config-rollback
 unit=/etc/systemd/system/thessley-pam-approvals.service
 
 [[ -d "$src/thessley_pam" ]] || { echo "Missing source package: $src/thessley_pam" >&2; exit 1; }
@@ -85,7 +86,7 @@ install -o root -g root -m 0755 "$src/thessley-pam" "$tmp/stage/thessley-pam"
 PYTHONPATH="$tmp/stage/lib" python3 -I -c "import ast,pathlib; p=pathlib.Path('$tmp/stage/lib/thessley_pam'); [ast.parse(x.read_text(encoding='utf-8')) for x in p.glob('*.py')]"
 
 # Capture exact prior state, including absence, so a first install can roll back too.
-for path in "$lib" "$bin" "$unit"; do
+for path in "$lib" "$bin" "$unit" "$rollback_helper"; do
     key=$(printf '%s' "$path" | sed 's#^/##; s#/#__#g')
     if [[ -e "$path" || -L "$path" ]]; then
         cp -a --parents "$path" "$backup/"
@@ -104,7 +105,7 @@ rollback() {
         trap - ERR EXIT
         echo "Install/activation failed; restoring previous installed files." >&2
         rollback_failed=0
-        for path in "$lib" "$bin" "$unit"; do
+        for path in "$lib" "$bin" "$unit" "$rollback_helper"; do
             key=$(printf '%s' "$path" | sed 's#^/##; s#/#__#g')
             if ! rm -rf -- "$path"; then
                 echo "Rollback could not remove the partial install at $path" >&2
@@ -150,6 +151,8 @@ install -d -o root -g root -m 0755 "$lib" "$lib/thessley_pam"
 cp -a "$tmp/stage/lib/thessley_pam/." "$lib/thessley_pam/"
 install -o root -g root -m 0755 "$tmp/stage/lib/pam-helper" "$helper"
 install -o root -g root -m 0755 "$tmp/stage/thessley-pam" "$bin"
+install -o root -g root -m 0755 "$src/ssh-config-rollback.sh" "$rollback_helper"
+install -d -o root -g root -m 0700 /var/lib/thessley-ssh-config-rollback
 find "$lib" -name __pycache__ -type d -prune -exec rm -rf -- {} +
 
 cat > "$tmp/thessley-pam-approvals.service" <<'UNIT'
@@ -173,7 +176,7 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=/etc/thessley-pam /run/thessley-pam
+ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled /run/thessley-pam
 
 [Install]
 WantedBy=multi-user.target

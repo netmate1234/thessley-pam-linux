@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the source-staging .deb and a signed apt repository for Ubuntu 24.04.
+# Build the source-staging .deb and a signed apt repository for Ubuntu LTS systems.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -52,13 +52,17 @@ choose optional integrations:
 
   sudo thessley-pam-install
 
-Optional choices default to No. The guided installer does not edit SSH login
-policy or configure an OpenVPN server. To run it from the source directory:
+The HTTPS web admin page is enabled by default (answer n to skip); other
+optional choices default to No. The guided installer does not edit SSH login
+policy or existing OpenVPN configuration. It can optionally create a new
+isolated OpenVPN server with Thessley QR approval on Ubuntu 24.04 or 26.04; it refuses
+to overwrite an existing Thessley VPN configuration or PKI. To run it from the
+source directory:
 
   sudo ./guided-install.sh
 
-The web service stays off unless explicitly enabled. Before editing SSH/PAM
-login policy, arm the provided timed SSH configuration rollback.
+Before editing SSH/PAM login policy, arm the provided timed SSH configuration
+rollback.
 
 Removing this package removes the staged source and documentation only. If
 install.sh or an optional component installer was run, use its documented

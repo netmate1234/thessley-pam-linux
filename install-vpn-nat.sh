@@ -18,7 +18,17 @@ DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 [ "$DRY" = 1 ] || [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }
 command -v iptables >/dev/null || { echo "iptables is not installed." >&2; exit 1; }
-SUBNET="${VPN_SUBNET:-10.8.0.0/24}"
+if [ -n "${VPN_SUBNET:-}" ]; then
+  SUBNET=$VPN_SUBNET
+elif [ -r /etc/openvpn/server/thessley.conf ]; then
+  configured_network=$(awk '$1 == "server" && $3 == "255.255.255.0" { print $2; exit }' /etc/openvpn/server/thessley.conf)
+  SUBNET="${configured_network:+$configured_network/24}"
+  SUBNET=${SUBNET:-10.8.0.0/24}
+else
+  SUBNET=10.8.0.0/24
+fi
+python3 -c 'import ipaddress,sys; n=ipaddress.ip_network(sys.argv[1], strict=True); sys.exit(0 if n.version == 4 and n.prefixlen == 24 else 1)' "$SUBNET" \
+  || { echo "VPN_SUBNET must be a valid IPv4 /24 network, for example 10.8.0.0/24." >&2; exit 1; }
 
 helper=/usr/local/lib/thessley-pam/vpn-nat
 unit=/etc/systemd/system/thessley-pam-vpn-nat.service

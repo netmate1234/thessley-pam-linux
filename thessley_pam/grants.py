@@ -578,7 +578,8 @@ WEB_DEFAULTS = {"enabled": False, "listen": "", "port": 47820, "session_minutes"
                 "max_connections": 32, "rate_limit_entries": 4096, "localhost_only": False}
 
 
-VPN_DEFAULTS = {"enabled": False, "public_host": "", "page_port": 47830, "socket_group": "nogroup", "wait": 180}
+VPN_DEFAULTS = {"enabled": False, "public_host": "", "server_port": 1194, "page_port": 47830,
+                "socket_group": "nogroup", "wait": 180}
 
 
 def vpn_settings() -> dict:
@@ -592,10 +593,13 @@ def vpn_settings() -> dict:
     except (TypeError, AttributeError):
         pass
     try:
+        out["server_port"] = min(max(int(out["server_port"]), 1), 65535)
         out["page_port"] = min(max(int(out["page_port"]), 1), 65535)
         out["wait"] = min(max(int(out["wait"]), 30), 600)
     except (TypeError, ValueError):
-        out["page_port"], out["wait"] = VPN_DEFAULTS["page_port"], VPN_DEFAULTS["wait"]
+        out["server_port"], out["page_port"], out["wait"] = (
+            VPN_DEFAULTS["server_port"], VPN_DEFAULTS["page_port"], VPN_DEFAULTS["wait"]
+        )
     out["enabled"] = bool(out["enabled"])
     return out
 

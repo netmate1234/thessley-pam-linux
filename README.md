@@ -27,6 +27,7 @@ chosen device authentication; the computer only ever holds the matching public k
 | Thessley Login (admin window) | Switches, phones, keyring link in one window | `sudo ./install-admin.sh` |
 | ssh with a phone pass | ssh key + phone once, then the key alone for N hours | [docs/SSH.md](docs/SSH.md) |
 | Admin web page | sign in with a phone approval, manage your keys, settings and activity in a browser | [docs/WEB.md](docs/WEB.md) |
+| OpenVPN server | a new OpenVPN instance with phone QR approval and an eight-hour reconnect token | choose the optional server setup in `sudo ./guided-install.sh` (Ubuntu 24.04 or 26.04) |
 
 Install order: `sudo apt install qrencode python3-cryptography python3-asn1crypto`, then `sudo ./install.sh`, then whatever you want from
 the table. The installer validates and stages its Python files before changing the installation, saves the previous code and
@@ -35,7 +36,8 @@ health check fails. It never edits `/etc/pam.d` or SSH policy: the helper runs a
 anyone else can write. Keep the printed backup path until the installation has been verified.
 
 For an interactive Ubuntu/Debian setup, `sudo ./guided-install.sh` checks the clock diagnostically, updates package lists,
-installs dependencies, and asks about optional integrations. A UTC mismatch or unavailable web-time comparison is a warning,
+installs dependencies, enables the HTTPS web admin page by default (answer `n` to skip), and asks about optional integrations,
+including either a new OpenVPN server or an approval hook for an existing server. A UTC mismatch or unavailable web-time comparison is a warning,
 not an install blocker. APT still verifies signed Release metadata dates and may refuse genuinely stale system time; do not
 disable those checks. Phone approvals use a short freshness window, so synchronize the phone and computer clocks.
 

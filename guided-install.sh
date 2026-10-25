@@ -30,6 +30,18 @@ ask() {
     done
 }
 
+ask_yes_default() {
+    while :; do
+        printf '%s [Y/n] ' "$1" > /dev/tty
+        IFS= read -r answer < /dev/tty || return 1
+        case "$answer" in
+            ''|y|Y|yes|YES|Yes) return 0 ;;
+            n|N|no|NO|No) return 1 ;;
+            *) echo "Please answer y or n." > /dev/tty ;;
+        esac
+    done
+}
+
 install_packages() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
 }
@@ -37,12 +49,15 @@ install_packages() {
 cat <<'INTRO'
 Thessley guided setup
 
-The shared phone-approval service is required. Optional features are asked
-below and default to No. This installer does not modify existing sshd_config
-or PAM login stacks, or OpenVPN server configuration. It only adds firewall
-rules if you explicitly choose the VPN-to-LAN forwarding option. The GNOME
-option creates its own password-preserving PAM service and does not replace
-the normal password login.
+The shared phone-approval service is required. The HTTPS web admin page is
+enabled by default; answer n to skip it. Other optional features default to
+No. This installer does not modify existing sshd_config,
+PAM login stacks, or OpenVPN server configuration. The separate OpenVPN
+server option creates a new, isolated Thessley instance only when one is not
+already installed. An existing Thessley server and its CA/client keys are
+preserved. Firewall forwarding is a separate opt-in choice.
+The GNOME option creates its own password-preserving PAM service and does not
+replace the normal password login.
 INTRO
 
 echo "Clock diagnostic (informational only; it never blocks setup)..."
@@ -97,18 +112,31 @@ else
     echo "To enroll a phone later, run: sudo thessley-pam enroll --user ACCOUNT"
 fi
 
-if ask "Install the HTTPS web admin page? It stays off until separately enabled."; then
+if ask_yes_default "Install and enable the HTTPS web admin page on its configured address and TCP port 47820?"; then
     "$src/install-web.sh"
-    if ask "Start and enable the web admin page now on its configured address and TCP port 47820?"; then
-        /usr/local/sbin/thessley-pam web on
-        /usr/local/sbin/thessley-pam web status
-        echo "Restrict TCP port 47820 to trusted networks in your firewall."
-    fi
+    /usr/local/sbin/thessley-pam web on
+    /usr/local/sbin/thessley-pam web status
+    echo "Restrict TCP port 47820 to trusted networks in your firewall."
 fi
 
 admin_installed=no
 if ask "Install the Thessley Login desktop admin app (GTK/libadwaita required)?"; then
-    install_packages python3-gi gir1.2-adw-1 policykit-1
+    desktop_packages="python3-gi gir1.2-adw-1"
+    if ! command -v pkexec >/dev/null 2>&1; then
+        # Ubuntu releases that split PolicyKit no longer publish policykit-1;
+        # pkexec is the command this app needs and pulls in its daemon.
+        if apt-cache policy pkexec 2>/dev/null | grep -Eq 'Candidate: [^ (]'; then
+            desktop_packages="$desktop_packages pkexec"
+        elif apt-cache policy policykit-1 2>/dev/null | grep -Eq 'Candidate: [^ (]'; then
+            desktop_packages="$desktop_packages policykit-1"
+        else
+            echo "Cannot find an installable package that provides pkexec. Install PolicyKit from your OS repositories, then rerun this option." >&2
+            exit 1
+        fi
+    fi
+    # Intentional word splitting: these are fixed apt package names above.
+    # shellcheck disable=SC2086
+    install_packages $desktop_packages
     "$src/install-admin.sh"
     admin_installed=yes
 fi
@@ -141,15 +169,42 @@ if ask "Allow users to enroll their own first phone without sudo password? This 
 fi
 
 vpn_installed=no
-if ask "Install the OpenVPN QR-approval service hook? This does not configure or start an OpenVPN server."; then
+vpn_server_installed=no
+if [ -e /etc/openvpn/server/thessley.conf ]; then
+    if systemctl is-active --quiet thessley-pam-vpn.service; then
+        echo "Existing Thessley OpenVPN server and QR-approval service detected. Preserving its configuration, CA, client keys, and firewall rules; no new VPN setup is needed."
+    elif ask "Existing Thessley OpenVPN config found but its approval service is not active. Install or repair the QR-approval hook? This preserves the server config and keys."; then
+        install_packages openvpn easy-rsa
+        "$src/install-vpn.sh"
+        vpn_installed=yes
+    else
+        echo "Existing Thessley OpenVPN config preserved. No VPN files were changed."
+    fi
+elif ask "Install and configure a new OpenVPN server with Thessley QR approval? It detects the private LAN route; other OpenVPN configurations are left alone."; then
+    bash "$src/install-openvpn-server.sh"
+    vpn_installed=yes
+    vpn_server_installed=yes
+elif ask "Install the Thessley QR-approval hook for an existing OpenVPN server? This does not configure or start OpenVPN."; then
     install_packages openvpn easy-rsa
     "$src/install-vpn.sh"
     vpn_installed=yes
 fi
 
-if [ "$vpn_installed" = yes ] && ask "Enable VPN-to-LAN forwarding/NAT now? Choose Yes only after configuring the OpenVPN server and 10.8.0.0/24 VPN range; this changes firewall and IP-forwarding rules."; then
-    install_packages iptables
-    "$src/install-vpn-nat.sh"
+if [ "$vpn_installed" = yes ]; then
+    if [ "$vpn_server_installed" = yes ] && ! grep -q '^push "route ' /etc/openvpn/server/thessley.conf; then
+        echo "No LAN route was selected for this new VPN server; skipping VPN-to-LAN forwarding."
+    elif ask "Enable VPN-to-LAN forwarding/NAT now? This changes firewall and IP-forwarding rules."; then
+        install_packages iptables
+        vpn_subnet_default=10.8.0.0/24
+        if [ -r /etc/openvpn/server/thessley.conf ]; then
+            vpn_network=$(awk '$1 == "server" && $3 == "255.255.255.0" { print $2; exit }' /etc/openvpn/server/thessley.conf)
+            [ -z "$vpn_network" ] || vpn_subnet_default="$vpn_network/24"
+        fi
+        printf 'VPN tunnel subnet to forward [%s]: ' "$vpn_subnet_default" > /dev/tty
+        IFS= read -r vpn_subnet < /dev/tty || vpn_subnet=$vpn_subnet_default
+        vpn_subnet=${vpn_subnet:-$vpn_subnet_default}
+        VPN_SUBNET="$vpn_subnet" "$src/install-vpn-nat.sh"
+    fi
 fi
 
 cat <<'DONE'
@@ -165,7 +220,7 @@ if [ "$ssh_installed" = yes ]; then
     echo "After a successful fresh SSH login, finalize with: sudo $src/ssh-config-rollback.sh cancel"
 fi
 if [ "$vpn_installed" = yes ]; then
-    echo "OpenVPN approval hook installed. Configure certificates, public host, and ports using $src/docs/VPN.md."
+    echo "OpenVPN setup details: $src/docs/VPN.md. Router port forwarding is still required for remote access."
 fi
 if [ "$admin_installed" = yes ]; then
     echo "Open Thessley Login from the applications menu."
