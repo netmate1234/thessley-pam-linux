@@ -60,19 +60,49 @@ rollback() {
     rc=$?
     if (( rc != 0 && applied )); then
         echo "Upgrade failed; restoring the previous files from $backup" >&2
-        cp -a "$backup/thessley_pam/." "$lib/thessley_pam/" || true
-        cp -a "$backup/pam_thessley_phone.so" "$old_module" || true
+        rollback_failed=0
+        cp -a "$backup/thessley_pam/." "$lib/thessley_pam/" || {
+            echo "Rollback could not restore Python modules into $lib/thessley_pam" >&2
+            rollback_failed=1
+        }
+        cp -a "$backup/pam_thessley_phone.so" "$old_module" || {
+            echo "Rollback could not restore the SSH PAM module at $old_module" >&2
+            rollback_failed=1
+        }
         if [[ -e "$backup/web-ssh-dropin-present" ]]; then
-            install -d -o root -g root -m 0755 "$web_dropin_dir"
-            cp -a "$backup/web-ssh-dropin.conf" "$web_dropin" || true
+            install -d -o root -g root -m 0755 "$web_dropin_dir" || {
+                echo "Rollback could not recreate $web_dropin_dir" >&2
+                rollback_failed=1
+            }
+            if [[ -d "$web_dropin_dir" ]]; then
+                cp -a "$backup/web-ssh-dropin.conf" "$web_dropin" || {
+                    echo "Rollback could not restore $web_dropin" >&2
+                    rollback_failed=1
+                }
+            fi
         else
-            rm -f -- "$web_dropin"
+            rm -f -- "$web_dropin" || {
+                echo "Rollback could not remove the partial SSH web-service override" >&2
+                rollback_failed=1
+            }
         fi
-        systemctl daemon-reload || true
-        for service in "${services[@]}"; do systemctl restart "$service" || true; done
-        echo "Rollback attempted. Backup retained at $backup" >&2
+        systemctl daemon-reload || {
+            echo 'Rollback could not reload systemd units.' >&2
+            rollback_failed=1
+        }
+        for service in "${services[@]}"; do
+            systemctl restart "$service" || {
+                echo "Rollback could not restart $service" >&2
+                rollback_failed=1
+            }
+        done
+        if (( rollback_failed )); then
+            echo "Rollback was incomplete. Keep this backup for recovery: $backup" >&2
+        else
+            echo "Rollback completed. Backup retained at $backup" >&2
+        fi
     fi
-    rm -rf -- "$tmp"
+    rm -rf -- "$tmp" || echo "Could not remove temporary staging directory: $tmp" >&2
     exit "$rc"
 }
 trap rollback EXIT

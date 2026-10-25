@@ -110,13 +110,28 @@ Use `--ip-scope any` only on hosts where SSH clients can arrive from changing ad
 user and service from every source IP until it expires; it still requires an enrolled phone approval and does not apply
 to other PAM services. Switch back with `--ip-scope same`. The setting is stored on this computer.
 
+Before changing SSH or PAM settings, arm the persistent rollback timer from this source directory:
+
+    sudo ./ssh-config-rollback.sh arm 10
+    sudo ./ssh-config-rollback.sh status
+
+The timer snapshots `/etc/ssh/sshd_config`, the complete `/etc/ssh/sshd_config.d/` directory, and
+`/etc/pam.d/sshd`. It is scheduled for the displayed local deadline, runs as root, and survives a reboot. If it is
+not cancelled, it restores those files, validates them with `sshd -t`, and reloads the SSH service. Keep your current
+SSH session open while testing. If the timer reports no future run time, do not edit the login configuration.
+
 Then, **always** in this order:
 
     sudo sshd -t                     # refuses to continue if the config is invalid
     sudo systemctl reload ssh        # reload, not restart: open sessions stay
 
-Keep one ssh session open while you try a new login, and keep a backup of both files
-(`/etc/ssh/sshd_config.bak-*`, `/etc/pam.d/sshd.bak-*`).
+Keep the current SSH session open while you try a fresh login. After the new login succeeds, cancel the timer:
+
+    sudo /usr/local/sbin/thessley-ssh-config-rollback cancel
+
+The snapshot remains in `/var/backups/thessley-ssh-config-rollback-*`. Check a pending timer with
+`sudo /usr/local/sbin/thessley-ssh-config-rollback status`. If it fires, the old SSH and PAM config is restored
+automatically; check `journalctl -u thessley-ssh-config-rollback.service` for its result.
 
 ### Exempting an admin machine (scripts and deploys)
 

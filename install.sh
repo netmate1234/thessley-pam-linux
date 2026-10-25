@@ -103,28 +103,44 @@ rollback() {
     if (( rc != 0 && applied )); then
         trap - ERR EXIT
         echo "Install/activation failed; restoring previous installed files." >&2
+        rollback_failed=0
         for path in "$lib" "$bin" "$unit"; do
             key=$(printf '%s' "$path" | sed 's#^/##; s#/#__#g')
-            rm -rf -- "$path"
+            if ! rm -rf -- "$path"; then
+                echo "Rollback could not remove the partial install at $path" >&2
+                rollback_failed=1
+                continue
+            fi
             if [[ $(cat "$backup/$key.state") == present ]]; then
-                install -d -o root -g root -m 0755 "$(dirname -- "$path")"
-                cp -a "$backup/${path#/}" "$path"
+                if ! install -d -o root -g root -m 0755 "$(dirname -- "$path")"; then
+                    echo "Rollback could not restore the parent directory for $path" >&2
+                    rollback_failed=1
+                    continue
+                fi
+                if ! cp -a "$backup/${path#/}" "$path"; then
+                    echo "Rollback could not restore $path" >&2
+                    rollback_failed=1
+                fi
             fi
         done
-        systemctl daemon-reload || true
+        systemctl daemon-reload || { echo 'Rollback could not reload systemd units.' >&2; rollback_failed=1; }
         if [[ $(cat "$backup/service-enabled.state") == enabled ]]; then
-            systemctl enable thessley-pam-approvals.service || true
+            systemctl enable thessley-pam-approvals.service || { echo 'Rollback could not restore the service enabled state.' >&2; rollback_failed=1; }
         else
-            systemctl disable thessley-pam-approvals.service || true
+            systemctl disable thessley-pam-approvals.service || { echo 'Rollback could not restore the service disabled state.' >&2; rollback_failed=1; }
         fi
         if [[ $(cat "$backup/service-active.state") == active ]]; then
-            systemctl restart thessley-pam-approvals.service || true
+            systemctl restart thessley-pam-approvals.service || { echo 'Rollback could not restart the previously active service.' >&2; rollback_failed=1; }
         else
-            systemctl stop thessley-pam-approvals.service || true
+            systemctl stop thessley-pam-approvals.service || { echo 'Rollback could not stop the previously inactive service.' >&2; rollback_failed=1; }
         fi
-        echo "Rollback attempted. Backup retained at $backup" >&2
+        if (( rollback_failed )); then
+            echo "Rollback was incomplete. Keep this backup for recovery: $backup" >&2
+        else
+            echo "Rollback completed. Backup retained at $backup" >&2
+        fi
     fi
-    rm -rf -- "$tmp"
+    rm -rf -- "$tmp" || echo "Could not remove temporary staging directory: $tmp" >&2
     exit "$rc"
 }
 trap rollback EXIT
