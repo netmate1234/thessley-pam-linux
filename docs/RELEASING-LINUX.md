@@ -26,7 +26,7 @@ the dedicated keyring. For example:
 
 ```sh
 GNUPGHOME="$HOME/.local/share/thessley-apt-signing/gnupg" \
-  packaging/deb/build-repo.sh 0.1.10 /tmp/thessley-apt-repo 5B76886E9CDB7C03
+  packaging/deb/build-repo.sh 0.1.11 /tmp/thessley-apt-repo 5B76886E9CDB7C03
 ```
 
 Upload the generated repository contents to:

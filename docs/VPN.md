@@ -191,6 +191,7 @@ Nothing else is opened: not Docker's networks, not other interfaces. Docker sets
 into its `DOCKER-USER` chain when there is one. `sudo ./install-vpn-nat.sh --dry-run` shows the rules first;
 `VPN_SUBNET=...` sets another range; `sudo ./uninstall-vpn-nat.sh` removes everything. This opens your home network to a client
 that has a valid certificate **and** an approved device, so keep ssh and the other services on it protected as they are now.
+The guided installer enables this forwarding by default whenever a LAN route is configured; answer `n` at its prompt to skip it.
 
 ## Tests and limits
 

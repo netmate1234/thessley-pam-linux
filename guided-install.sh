@@ -46,6 +46,20 @@ install_packages() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
 }
 
+enable_vpn_lan_forwarding() {
+    vpn_subnet=${1:-}
+    if [ -z "$vpn_subnet" ] && [ -r /etc/openvpn/server/thessley.conf ]; then
+        vpn_subnet=$(awk '$1 == "server" && $3 == "255.255.255.0" { print $2 "/24"; exit }' /etc/openvpn/server/thessley.conf)
+    fi
+    if [ -z "$vpn_subnet" ]; then
+        printf 'VPN tunnel subnet to forward [10.8.0.0/24]: ' > /dev/tty
+        IFS= read -r vpn_subnet < /dev/tty || vpn_subnet=10.8.0.0/24
+        vpn_subnet=${vpn_subnet:-10.8.0.0/24}
+    fi
+    install_packages iptables
+    VPN_SUBNET="$vpn_subnet" "$src/install-vpn-nat.sh"
+}
+
 cat <<'INTRO'
 Thessley guided setup
 
@@ -55,7 +69,7 @@ No. This installer does not modify existing sshd_config,
 PAM login stacks, or OpenVPN server configuration. The separate OpenVPN
 server option creates a new, isolated Thessley instance only when one is not
 already installed. An existing Thessley server and its CA/client keys are
-preserved. Firewall forwarding is a separate opt-in choice.
+preserved. VPN-to-LAN forwarding/NAT is enabled by default when a LAN route is configured; answer n to skip it.
 The GNOME option creates its own password-preserving PAM service and does not
 replace the normal password login.
 INTRO
@@ -172,7 +186,18 @@ vpn_installed=no
 vpn_server_installed=no
 if [ -e /etc/openvpn/server/thessley.conf ]; then
     if systemctl is-active --quiet thessley-pam-vpn.service; then
-        echo "Existing Thessley OpenVPN server and QR-approval service detected. Preserving its configuration, CA, client keys, and firewall rules; no new VPN setup is needed."
+        echo "Existing Thessley OpenVPN server and QR-approval service detected. Preserving its configuration, CA, and client keys; no new VPN setup is needed."
+        if grep -q '^push "route ' /etc/openvpn/server/thessley.conf; then
+            if systemctl is-active --quiet thessley-pam-vpn-nat.service && systemctl is-enabled --quiet thessley-pam-vpn-nat.service; then
+                echo "VPN-to-LAN forwarding/NAT is already active and enabled."
+            elif ask_yes_default "Enable VPN-to-LAN forwarding/NAT for the configured LAN route? This lets approved VPN clients reach that LAN and adjusts firewall/IP forwarding."; then
+                enable_vpn_lan_forwarding
+            else
+                echo "VPN-to-LAN forwarding/NAT was skipped; clients can reach this VPN server only."
+            fi
+        else
+            echo "No LAN route is configured in the existing VPN server; forwarding was not changed."
+        fi
     elif ask "Existing Thessley OpenVPN config found but its approval service is not active. Install or repair the QR-approval hook? This preserves the server config and keys."; then
         install_packages openvpn easy-rsa
         "$src/install-vpn.sh"
@@ -193,17 +218,10 @@ fi
 if [ "$vpn_installed" = yes ]; then
     if [ "$vpn_server_installed" = yes ] && ! grep -q '^push "route ' /etc/openvpn/server/thessley.conf; then
         echo "No LAN route was selected for this new VPN server; skipping VPN-to-LAN forwarding."
-    elif ask "Enable VPN-to-LAN forwarding/NAT now? This changes firewall and IP-forwarding rules."; then
-        install_packages iptables
-        vpn_subnet_default=10.8.0.0/24
-        if [ -r /etc/openvpn/server/thessley.conf ]; then
-            vpn_network=$(awk '$1 == "server" && $3 == "255.255.255.0" { print $2; exit }' /etc/openvpn/server/thessley.conf)
-            [ -z "$vpn_network" ] || vpn_subnet_default="$vpn_network/24"
-        fi
-        printf 'VPN tunnel subnet to forward [%s]: ' "$vpn_subnet_default" > /dev/tty
-        IFS= read -r vpn_subnet < /dev/tty || vpn_subnet=$vpn_subnet_default
-        vpn_subnet=${vpn_subnet:-$vpn_subnet_default}
-        VPN_SUBNET="$vpn_subnet" "$src/install-vpn-nat.sh"
+    elif ask_yes_default "Enable VPN-to-LAN forwarding/NAT now? This lets VPN clients reach the configured LAN route and changes firewall/IP-forwarding rules."; then
+        enable_vpn_lan_forwarding
+    else
+        echo "VPN-to-LAN forwarding/NAT was skipped; clients can reach this VPN server only."
     fi
 fi
 

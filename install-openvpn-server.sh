@@ -288,6 +288,6 @@ printf '\nSetup complete.\nProfile: %s (contains a private key; transfer securel
 printf 'Configure the router to forward UDP %s and TCP 47830 to this server.\n' "$PORT"
 printf 'Forward UDP %s and TCP 47830 on the router to this server for remote VPN login and phone approval.\n' "$PORT"
 if [[ $LAN_ROUTE != none ]]; then
-  printf 'The server pushes route %s to VPN clients; enable the separate VPN-to-LAN forwarding option if clients need other LAN machines.\n' "$LAN_ROUTE"
+  printf 'The server pushes route %s to VPN clients. The guided installer enables VPN-to-LAN forwarding/NAT by default; answer n to skip it.\n' "$LAN_ROUTE"
 fi
 printf 'The first approved login creates an OpenVPN reconnect token: renewed hourly, maximum 8 hours.\n'

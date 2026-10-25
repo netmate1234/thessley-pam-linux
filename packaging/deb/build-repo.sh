@@ -54,9 +54,10 @@ choose optional integrations:
 
 The HTTPS web admin page is enabled by default (answer n to skip); other
 optional choices default to No. The guided installer does not edit SSH login
-policy or existing OpenVPN configuration. It can optionally create a new
-isolated OpenVPN server with Thessley QR approval on Ubuntu 24.04 or 26.04; it refuses
-to overwrite an existing Thessley VPN configuration or PKI. To run it from the
+policy or overwrite existing OpenVPN configuration. It supports Ubuntu 24.04,
+Ubuntu 26.04, and Debian 13. It can optionally create a new isolated OpenVPN
+server with Thessley QR approval. VPN-to-LAN forwarding/NAT is enabled by
+default when a LAN route is configured; answer n to skip it. To run it from the
 source directory:
 
   sudo ./guided-install.sh

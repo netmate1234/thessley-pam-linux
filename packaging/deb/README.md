@@ -1,8 +1,8 @@
-# Ubuntu APT repository
+# Thessley Linux APT repository
 
 The published APT repository is served by the Orange Pi 5 at
 `https://wp-opsec.eagleeye-intelligence.com/wp-content/uploads/thessley-apt/`.
-The `thessley-pam-linux-installer` package targets Ubuntu 24.04 and 26.04 LTS on amd64 and
+The `thessley-pam-linux-installer` package targets Ubuntu 24.04 and 26.04 LTS and Debian 13 (including Armbian based on Debian 13) on amd64 and
 arm64. It installs this source tree at `/opt/thessley-pam-linux`, the
 `thessley-pam-install` guided-setup command, and runtime dependencies. Installing
 the package does not start services, change firewall rules, or edit login policy.
@@ -24,10 +24,12 @@ After the repository is configured, install the package and launch the guided se
 
 The guided setup installs the required shared approval service, enables the
 HTTPS web admin page by default (answer `n` to skip), and asks about other
-optional integrations. Those choices default to No. It does not edit
+optional integrations. Those choices default to No. VPN-to-LAN forwarding/NAT
+is enabled by default when a LAN route is configured; answer `n` to skip it.
+It does not edit
 `sshd_config`, SSH PAM policy, or existing OpenVPN server configuration. It
 can optionally create a new isolated OpenVPN server with Thessley QR approval
-on Ubuntu 24.04 or 26.04; the setup refuses to overwrite an
+on Ubuntu 24.04, Ubuntu 26.04, and Debian 13; the setup refuses to overwrite an
 existing Thessley VPN configuration or PKI. If setup stops after creating the
 CA, rerun it in an interactive terminal: it keeps the root-only CA and resumes
 the server and client signing steps. If upgrading an encrypted CA, run
@@ -63,7 +65,7 @@ Create a dedicated OpenPGP signing key and keep its private key on the release
 machine. Export only the public key as `thessley-archive-keyring.gpg`. Build a
 package and signed repository with:
 
-    packaging/deb/build-repo.sh 0.1.10 /tmp/thessley-apt-repo SIGNING_KEY_ID
+    packaging/deb/build-repo.sh 0.1.11 /tmp/thessley-apt-repo SIGNING_KEY_ID
 
 The repository signing key fingerprint is:
 `563A40578A64324AC1EB05475B76886E9CDB7C03`. The release workstation's private
