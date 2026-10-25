@@ -31,7 +31,7 @@ the client shows nothing while it waits, so the link has to be taken from elsewh
 ## Install
 
 The Linux guided installer can create a **new** OpenVPN server configured for Thessley QR approval. Choose that option from
-`sudo ./guided-install.sh` (or `sudo thessley-pam-install` from the APT package). It supports Ubuntu 24.04 and 26.04 LTS,
+`sudo ./guided-install.sh` (or `sudo thessley-pam-install` from the APT package). It supports Ubuntu 24.04 and 26.04 LTS, and Debian 13 (including Armbian based on Debian 13),
 asks for the public host, approving account, tunnel range, UDP port, and client label. It detects a private connected LAN subnet
 from the default-route interface, chooses a tunnel default that does not overlap that subnet, and lets you override either range
 or choose `none` for LAN routing. Public cloud-facing subnets are not assumed to be LANs. The LAN range must not overlap the VPN

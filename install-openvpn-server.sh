@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guided Ubuntu 24.04/26.04 OpenVPN server setup with Thessley phone approval.
+# Guided Ubuntu 24.04/26.04 and Debian 13 OpenVPN setup with Thessley phone approval.
 # Run as root from a terminal. This creates a separate OpenVPN instance named
 # thessley; it refuses to overwrite an existing Thessley OpenVPN config/PKI.
 set -Eeuo pipefail
@@ -10,8 +10,10 @@ die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 [[ -x /usr/local/sbin/thessley-pam ]] || die 'Install the Thessley Linux package first (Linux installation guide).'
 [[ -r /etc/os-release ]] || die 'Cannot identify this Linux distribution.'
 . /etc/os-release
-[[ ${ID:-} == ubuntu && ( ${VERSION_ID:-} == 24.04 || ${VERSION_ID:-} == 26.04 ) ]] \
-  || die 'This guided setup currently supports Ubuntu 24.04 and 26.04 LTS.'
+case "${ID:-}:${VERSION_ID:-}" in
+  ubuntu:24.04|ubuntu:26.04|debian:13) ;;
+  *) die 'This guided setup supports Ubuntu 24.04/26.04 LTS and Debian 13 (including Armbian based on Debian 13).' ;;
+esac
 
 CONF=/etc/openvpn/server/thessley.conf
 PKI=/etc/openvpn/easy-rsa-thessley
@@ -71,7 +73,7 @@ read -r -p 'Device label for the first client profile [phone]: ' DEVICE
 DEVICE=${DEVICE:-phone}
 [[ $DEVICE =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || die 'Device label may contain letters, numbers, dot, underscore and hyphen (up to 32).'
 
-printf '\nThis will install OpenVPN/Easy-RSA and create a new isolated server instance on Ubuntu 24.04 or 26.04 LTS.\n'
+printf '\nThis will install OpenVPN/Easy-RSA and create a new isolated server instance on Ubuntu 24.04/26.04 LTS or Debian 13.\n'
 printf 'It will not change SSH/PAM, router settings, or an existing OpenVPN configuration.\n'
 printf 'Phone approval page: TCP 47830. VPN transport: UDP %s.\n' "$PORT"
 read -r -p 'Continue? [y/N] ' CONFIRM
