@@ -5,6 +5,7 @@ still use the short-lived listener below for local diagnostics and isolated deve
 """
 
 import contextlib
+import base64
 import datetime
 import errno
 import hashlib
@@ -27,10 +28,44 @@ from cryptography.x509.oid import NameOID
 MAX_BODY = 64 * 1024
 SHARED_PORT = 47810
 SHARED_SOCKET = "/run/thessley-pam/approvals.sock"
-MAX_FRAME = 128 * 1024
+MAX_FRAME = 256 * 1024
 
 # (path, parsed JSON body) -> (HTTP status, JSON reply). Raise nothing; return an error reply instead.
 Route = Callable[[str, dict], tuple[int, dict]]
+RawRouteHandler = Callable[[str, dict, bytes, dict[str, str]], tuple[int, dict]]
+
+
+class RawBodyRoute:
+    """Opt-in route handler that receives the exact request bytes and auth headers."""
+
+    def __init__(self, handler: RawRouteHandler):
+        self.handler = handler
+
+
+_MACHINE_AUTH_HEADER_NAMES = (
+    "x-thessley-machine-id",
+    "x-thessley-timestamp",
+    "x-thessley-nonce",
+    "x-thessley-signature",
+)
+
+
+def _machine_auth_headers(headers) -> dict[str, str]:
+    selected = {}
+    for name in _MACHINE_AUTH_HEADER_NAMES:
+        values = headers.get_all(name, [])
+        if len(values) > 1 or (values and len(values[0]) > 256):
+            raise ValueError("Invalid machine authentication headers.")
+        if values:
+            selected[name] = values[0]
+    return selected
+
+
+def _dispatch_route(route, client_ip: str, body: dict, raw_body: bytes,
+                    auth_headers: dict[str, str]) -> tuple[int, dict]:
+    if isinstance(route, RawBodyRoute):
+        return route.handler(client_ip, body, raw_body, auth_headers)
+    return route(client_ip, body)
 
 
 def _make_cert(ip: str, tmp: str) -> tuple[str, str, str]:
@@ -60,7 +95,7 @@ def _make_cert(ip: str, tmp: str) -> tuple[str, str, str]:
 
 
 @contextlib.contextmanager
-def listening(ip: str, routes: dict, first_port: int, tries: int = 10):
+def listening(ip: str, routes: dict[str, Route | RawBodyRoute], first_port: int, tries: int = 10):
     """Register routes with the permanent listener; non-default ports remain available for local diagnostics."""
     if first_port == SHARED_PORT and tries == 10:
         registration = SharedRegistration(routes)
@@ -95,7 +130,7 @@ def listening(ip: str, routes: dict, first_port: int, tries: int = 10):
 class SharedRegistration:
     """A private Unix-socket channel to the shared HTTPS listener for one approval flow."""
 
-    def __init__(self, routes: dict[str, Route]):
+    def __init__(self, routes: dict[str, Route | RawBodyRoute]):
         self.routes = routes
         self.conn = None
         self.reader = None
@@ -151,7 +186,16 @@ class SharedRegistration:
                 if not isinstance(payload, dict):
                     status, body = 400, {"result": "error", "message": "Body is not a JSON object."}
                 else:
-                    status, body = route(client_ip, payload)
+                    try:
+                        raw_body = base64.b64decode(item.get("raw_body_b64", ""), validate=True)
+                        auth_headers = item.get("auth_headers", {})
+                        if len(raw_body) > MAX_BODY or not isinstance(auth_headers, dict):
+                            raise ValueError
+                        if any(not isinstance(k, str) or not isinstance(v, str) for k, v in auth_headers.items()):
+                            raise ValueError
+                        status, body = _dispatch_route(route, client_ip, payload, raw_body, auth_headers)
+                    except (ValueError, TypeError):
+                        status, body = 400, {"result": "error", "message": "Invalid forwarded request metadata."}
             self._send({"type": "response", "id": request_id, "status": int(status), "body": body})
         except Exception:
             try:
@@ -202,7 +246,7 @@ class SharedRegistration:
 class Listener:
     """POST-only JSON server for the routes given. Use as a context manager."""
 
-    def __init__(self, ip: str, port: int, routes: dict[str, Route]):
+    def __init__(self, ip: str, port: int, routes: dict[str, Route | RawBodyRoute]):
         self.ip, self.port, self.routes = ip, port, routes
         self.fingerprint = ""
         self._tmp = None
@@ -238,13 +282,17 @@ class Listener:
                     self._reply(400, {"result": "error", "message": "Bad request body."})
                     return
                 try:
-                    body = json.loads(self.rfile.read(length))
+                    raw_body = self.rfile.read(length)
+                    if len(raw_body) != length:
+                        raise ValueError
+                    body = json.loads(raw_body)
                     if not isinstance(body, dict):
                         raise ValueError
+                    auth_headers = _machine_auth_headers(self.headers)
                 except ValueError:
                     self._reply(400, {"result": "error", "message": "Body is not a JSON object."})
                     return
-                status, reply = route(self.client_address[0], body)
+                status, reply = _dispatch_route(route, self.client_address[0], body, raw_body, auth_headers)
                 self._reply(status, reply)
 
             def log_message(self, fmt, *a):

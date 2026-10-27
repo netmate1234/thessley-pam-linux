@@ -5,6 +5,7 @@ VPN approvals stay on their separate HTTPS service and port 47830.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -18,15 +19,19 @@ from concurrent.futures import Future, TimeoutError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import machine, store
+from .listener import _machine_auth_headers
 
 SOCKET = "/run/thessley-pam/approvals.sock"
 PORT = 47810
 MAX_BODY = 64 * 1024
-MAX_FRAME = 128 * 1024
+MAX_FRAME = 256 * 1024
 MAX_ROUTES = 2048
 MAX_REGISTRATIONS = 512
 RESPONSE_WAIT = 15
-ROUTE_RE = re.compile(r"^/thessley-pam/v1/[a-z0-9_-]{1,32}/[A-Za-z0-9_-]{1,64}/[a-z0-9-]{1,32}$")
+ROUTE_RE = re.compile(
+    r"^(?:/thessley-pam/v1/[a-z0-9_-]{1,32}/[A-Za-z0-9_-]{1,64}/[a-z0-9-]{1,32}"
+    r"|/thessley-ad/v1/[a-z0-9_-]{1,32}(?:/[A-Za-z0-9_-]{1,64}){0,3})$"
+)
 
 
 def _readline(sock: socket.socket) -> bytes:
@@ -82,7 +87,8 @@ class Registration:
         finally:
             self.close()
 
-    def forward(self, path: str, client_ip: str, body: dict) -> tuple[int, dict]:
+    def forward(self, path: str, client_ip: str, body: dict, raw_body: bytes,
+                auth_headers: dict[str, str]) -> tuple[int, dict]:
         request_id = secrets.token_urlsafe(12)
         future: Future = Future()
         with self.lock:
@@ -90,8 +96,12 @@ class Registration:
                 return 503, {"result": "error", "message": "Approval is no longer active."}
             self.pending[request_id] = future
         try:
-            self.send({"type": "request", "id": request_id, "path": path, "client_ip": client_ip, "body": body})
-        except OSError:
+            self.send({
+                "type": "request", "id": request_id, "path": path, "client_ip": client_ip,
+                "body": body, "raw_body_b64": base64.b64encode(raw_body).decode("ascii"),
+                "auth_headers": auth_headers,
+            })
+        except (OSError, ValueError):
             with self.lock:
                 self.pending.pop(request_id, None)
             self.close()
@@ -206,13 +216,23 @@ class ApprovalServer:
                     self._reply(400, {"result": "error", "message": "Bad request body."})
                     return
                 try:
-                    body = json.loads(self.rfile.read(length))
+                    raw_body = self.rfile.read(length)
+                    if len(raw_body) != length:
+                        raise ValueError
+                    body = json.loads(raw_body)
                     if not isinstance(body, dict):
                         raise ValueError
                 except (ValueError, json.JSONDecodeError):
                     self._reply(400, {"result": "error", "message": "Body is not a JSON object."})
                     return
-                status, reply = registration.forward(self.path, self.client_address[0], body)
+                try:
+                    auth_headers = _machine_auth_headers(self.headers)
+                except (AttributeError, ValueError):
+                    self._reply(400, {"result": "error", "message": "Invalid machine authentication headers."})
+                    return
+                status, reply = registration.forward(
+                    self.path, self.client_address[0], body, raw_body, auth_headers
+                )
                 self._reply(status, reply)
 
             def log_message(self, fmt, *args):
