@@ -39,16 +39,21 @@ group, as below.
 
     sudo apt install qrencode python3-cryptography build-essential libpam0g-dev
     sudo ./install.sh                                      # installs and starts the shared approval listener on TCP 47810
-    sudo ./install-ssh.sh                                  # builds and installs pam_thessley_phone.so
+    sudo ./install-ssh.sh --configure-sshd                 # builds the PAM module and writes the sshd Match block
 
-    sudo groupadd thessley-ssh                             # who is affected
-    sudo usermod -aG thessley-ssh USER
+    sudo usermod -aG thessley-ssh USER                     # who is affected (--configure-sshd creates the group)
     sudo thessley-pam enroll --user USER                   # their phone (QR code, scan, type yes)
     sudo thessley-pam grace --service sshd --hours 4       # the pass length, same client IP by default
     sudo thessley-pam grace --service sshd --hours 4 --ip-scope any  # optional cloud-host mode
     sudo thessley-pam require --service sshd on            # members with no phone are refused (fail closed)
 
-`/etc/ssh/sshd_config`, at the end of the file (a `Match` block must be last):
+`--configure-sshd` writes `/etc/ssh/sshd_config.d/10-thessley-ssh-gate.conf`, validates it with `sshd -t`, and reloads
+ssh; if sshd refuses the file, the previous file (or none) is put back. Do not also append a block to
+`/etc/ssh/sshd_config`: sshd keeps the **first** value it sees and `sshd_config.d/*.conf` is Included near the top of
+`sshd_config`, so a drop-in always beats a block at the end. The script notes any earlier drop-in that also sets
+`AuthenticationMethods`, and any redundant `Match Group thessley-ssh` left in `sshd_config`.
+
+The file it writes (a `Match` block must be last in its file):
 
     Match Group thessley-ssh
         AuthenticationMethods publickey,keyboard-interactive:pam keyboard-interactive:pam
@@ -136,15 +141,17 @@ automatically; check `journalctl -u thessley-ssh-config-rollback.service` for it
 ### Exempting an admin machine (scripts and deploys)
 
 Anything unattended (scripts, deploys, cron on another machine) has no person available to approve a phone request. To keep
-the key alone for one user from one address, add this block **above** `Match Group thessley-ssh` (sshd uses the first value it
-finds, so the order matters):
+the key alone for one user from one address, put the exemption in an earlier drop-in than the gate, for example
+`/etc/ssh/sshd_config.d/05-admin-exemption.conf` (sshd uses the first value it finds, and drop-ins are read in filename
+order before the rest of `sshd_config`):
 
     Match User ubuntu Address 192.168.1.111
         AuthenticationMethods publickey
 
-and put the user in the group. From that address the user logs in with the key as before; from every other address
-the key plus the phone is needed. Give that machine a fixed address on the router, otherwise the exemption silently
-stops applying when its address changes (the user can still log in with the phone).
+Adding the block "above" `Match Group thessley-ssh` inside `/etc/ssh/sshd_config` is **not** enough once the gate lives
+in a drop-in: the drop-in is read first and wins. From that address the user logs in with the key as before; from every
+other address the key plus the phone is needed. Give that machine a fixed address on the router, otherwise the exemption
+silently stops applying when its address changes (the user can still log in with the phone).
 
 Check what applies to whom without connecting:
 
@@ -281,7 +288,7 @@ was run on a throwaway user before any real account was added.
 ## Undo
 
 - one user: `sudo gpasswd -d USER thessley-ssh`
-- everything: remove the `Match Group thessley-ssh` block (and any exemption block) from `sshd_config`, remove the two
+- everything: remove `/etc/ssh/sshd_config.d/10-thessley-ssh-gate.conf` (and any exemption drop-in), remove the two
   lines from `/etc/pam.d/sshd` (or restore the `.bak-*` copies), `sudo sshd -t && sudo systemctl reload ssh`
 - passes: `sudo thessley-pam grace --service sshd --hours 0` (also ends them)
 
