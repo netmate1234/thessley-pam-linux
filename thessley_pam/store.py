@@ -140,7 +140,8 @@ def all_users() -> list[str]:
 
 def add_device(username: str, public_key: str, label: str, attestation_chain: list[str],
                attestation: dict | None = None, vpn_host: str = "",
-               key_attestation_status: str = "", key_attestation_reason: str = "") -> dict:
+               key_attestation_status: str = "", key_attestation_reason: str = "",
+               key_attestation_challenge: str = "") -> dict:
     """Store one phone or app. `attestation` is what this computer itself checked at enrolment (TPM proof), if anything:
     {"level": "tpm", "maker": ..., "model": ..., "checked_at": ...} or {"level": "unverified", "reason": ...}."""
     data = load(username)
@@ -157,6 +158,11 @@ def add_device(username: str, public_key: str, label: str, attestation_chain: li
     if key_attestation_status:
         device["attestation_status"] = key_attestation_status
         device["attestation_reason"] = key_attestation_reason
+    if key_attestation_challenge:
+        # Keep the nonce the key's attestation certificate was made for. It is not
+        # secret; keeping it lets `verify-keys` re-check the challenge later. Without
+        # it a re-check can only follow the chain, not prove this enrolment.
+        device["attestation_challenge"] = key_attestation_challenge
     if vpn_host:  # enrolled for the VPN (thessley-pam vpn enroll): listed apart from the ssh and sudo devices
         device["vpn_host"] = vpn_host
     data["devices"].append(device)

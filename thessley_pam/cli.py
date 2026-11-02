@@ -224,7 +224,8 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
         key_attestation = attestation.verify_chain(
             chain, expected_challenge=nonce.encode("ascii"), expected_public_key_spki=expected_key)
         pending.put({"client_ip": client_ip, "public_key": public_key, "label": label, "chain": chain,
-                     "attestation": tpm_attestation, "key_attestation": key_attestation})
+                     "attestation": tpm_attestation, "key_attestation": key_attestation,
+                     "attestation_challenge": nonce})
         if not decided.wait(confirm_wait + 10) or not decision.get("ok"):
             if decision.get("error"):
                 return 500, {"result": "error", "message": "The computer could not save this device: " + decision["error"]}
@@ -280,7 +281,8 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
                 device = store.add_device(username, item["public_key"], item["label"], item["chain"], item.get("attestation"),
                                           vpn_host=(link_extra or {}).get("vh", ""),
                                           key_attestation_status=str(key.get("status", "unverified")),
-                                          key_attestation_reason=str(key.get("reason", "")))
+                                          key_attestation_reason=str(key.get("reason", "")),
+                                          key_attestation_challenge=str(item.get("attestation_challenge", "")))
                 decision.update(ok=True, credential_id=device["credential_id"])
         except OSError as e:
             decision["error"] = str(e)
@@ -473,9 +475,10 @@ def cmd_self_enroll(args) -> int:
 def cmd_verify_keys(args) -> int:
     """Re-check the attestation chain of every stored device and record the verdict.
 
-    Devices enrolled before this check existed have no verdict yet; their
-    enrollment nonce is gone, so the challenge cannot be compared, but the
-    chain still proves where the key lives.
+    Devices enrolled before this check existed have no verdict yet, and older ones
+    did not keep their enrolment nonce, so the challenge cannot be compared: the
+    chain still proves where the key lives, but not that this enrolment made it.
+    Such a check never weakens a verdict that was reached with the nonce.
     """
     _need_root()
     users = [args.user] if args.user else store.all_users()
@@ -490,8 +493,15 @@ def cmd_verify_keys(args) -> int:
                     public_key = base64.b64decode(device.get("public_key", ""), validate=True)
                 except (ValueError, TypeError):
                     public_key = None
-                result = attestation.verify_chain(chain, expected_public_key_spki=public_key)
+                challenge = str(device.get("attestation_challenge") or "")
+                result = attestation.verify_chain(
+                    chain,
+                    expected_challenge=challenge.encode("ascii") if challenge else None,
+                    expected_public_key_spki=public_key)
                 status, reason = result.get("status", "unverified"), result.get("reason", "")
+                if (not challenge and status == device.get("attestation_status")
+                        and device.get("attestation_reason") == "hardware_attestation_valid"):
+                    reason = "hardware_attestation_valid"  # enrolment compared the nonce; keep that verdict
             if device.get("attestation_status") != status or device.get("attestation_reason") != reason:
                 store.set_key_attestation(user, device["credential_id"], status, reason)
                 changed += 1
