@@ -65,6 +65,10 @@ ADMIN_GROUPS = ("sudo", "admin", "wheel")
 
 MAX_BODY = 8 * 1024
 SESSION_MAX_SECONDS = 8 * 3600
+# Sessions survive a restart of the service (and a reboot) by being kept here,
+# as SHA-256 of the cookie value: the raw token is never written to disk.
+SESSIONS_FILE = "/etc/thessley-pam/web-sessions.json"
+SESSION_SAVE_INTERVAL = 30
 FLOW_KEEP_SECONDS = 15 * 60
 LOGIN_RATE = (8, 300)  # at most 8 sign-in requests per client address in 300 s
 MAX_FLOWS = 40
@@ -177,9 +181,12 @@ class Session:
 class WebApp:
     """All state and rules, apart from HTTP. Tests drive it directly or through the server."""
 
-    def __init__(self, journal=None, qr=None, log=None):
+    def __init__(self, journal=None, qr=None, log=None, sessions_path: str | None = SESSIONS_FILE):
         self.log = log or syslog_info
+        # Keyed by SHA-256 of the cookie, never the cookie itself.
         self.sessions: dict[str, Session] = {}
+        self.sessions_path = sessions_path
+        self.sessions_saved = 0.0
         self.flows: dict[str, Flow] = {}
         self.vpn_downloads: dict[str, tuple[str, bytes, str, float]] = {}
         self.attempts: dict[str, list[float]] = {}
@@ -188,6 +195,7 @@ class WebApp:
         self.qr = qr or qr_svg
         self.httpd: Server | None = None
         self.rebind_requested = False
+        self.load_sessions()
 
     def rebind(self) -> None:
         """Restart the listener after an admin changes its bind address."""
@@ -197,6 +205,57 @@ class WebApp:
             timer = threading.Timer(1.5, server.shutdown)
             timer.daemon = True
             timer.start()
+
+    # -- keeping sign-ins across a restart
+    @staticmethod
+    def token_key(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
+
+    def load_sessions(self) -> None:
+        """Read back the sessions saved before the last restart (idle and absolute limits still apply)."""
+        path = self.sessions_path
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as handle:
+                saved = json.load(handle)
+        except (OSError, ValueError):
+            return
+        if not isinstance(saved, dict):
+            return
+        with self.lock:
+            for key, item in saved.items():
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    session = Session(str(item["user"]), int(item.get("minutes") or 0))
+                    session.token = ""
+                    session.csrf = str(item["csrf"])
+                    session.created = float(item["created"])
+                    session.last = float(item["last"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if session.valid():
+                    self.sessions[key] = session
+
+    def save_sessions(self) -> None:
+        """Write the live sessions (hashed keys only) so a restart does not sign everyone out."""
+        path = self.sessions_path
+        if not path:
+            return
+        with self.lock:
+            data = {key: {"user": s.user, "csrf": s.csrf, "created": s.created,
+                          "last": s.last, "minutes": s.minutes}
+                    for key, s in self.sessions.items() if s.valid()}
+        temporary = path + ".tmp"
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(data, handle)
+            os.replace(temporary, path)
+            self.sessions_saved = now()
+        except OSError:
+            pass  # a read-only state directory must not break sign-in
 
     # -- housekeeping
     def settings(self) -> dict:
@@ -240,15 +299,19 @@ class WebApp:
     def session(self, token: str | None) -> Session | None:
         if not token:
             return None
+        key = self.token_key(token)
         with self.lock:
-            s = self.sessions.get(token)
+            s = self.sessions.get(key)
             if s is None:
                 return None
             if not s.valid():
-                del self.sessions[token]
+                del self.sessions[key]
                 return None
             s.last = now()
-            return s
+            due = now() - self.sessions_saved > SESSION_SAVE_INTERVAL
+        if due:
+            self.save_sessions()
+        return s
 
     def rate_ok(self, ip: str) -> bool:
         limit, window = LOGIN_RATE
@@ -289,8 +352,9 @@ class WebApp:
             # The browser needs the approval URI to render its QR code. Terminal
             # approvals may hide the link via the user's show-link preference,
             # but that preference must not suppress QR generation in the web UI.
+            approval_context = "install-approval" if flow.description == "approving the completed Thessley installation" else "-"
             rc = pam.run({"PAM_TYPE": "auth", "PAM_USER": flow.user, "PAM_SERVICE": service,
-                          "PAM_RHOST": ip, "PAM_TTY": "-", "PAM_ALWAYS_LINK": "1"},
+                          "PAM_RHOST": ip, "PAM_TTY": approval_context, "PAM_ALWAYS_LINK": "1"},
                          say=flow.say, wait=WEB_WAIT)
         except Exception as exc:  # strict: any trouble is a refusal
             flow.say(f"error: {exc!r}")
@@ -299,6 +363,20 @@ class WebApp:
         flow.state = "approved" if rc == pam.OK else ("timeout" if "no answer" in text else "refused")
         if flow.state != "approved":
             flow.on_approved = None
+        elif flow.kind == "change":
+            # Run the approved change here, in the thread that received the
+            # phone's answer. A phone browser that went to the app to approve
+            # stops polling its timers, so waiting for the next status poll can
+            # hang the page (and the change would never run).
+            self.finish(flow)
+            self.log(f"web page: approved change '{flow.description}' for {flow.user}: {flow.flash}")
+        elif flow.kind == "change":
+            # Run approved mutations in the worker that receives the phone
+            # answer. Do not rely on the browser's next status poll to execute
+            # an already-approved operation; the browser may have been closed
+            # or its polling request may fail.
+            self.finish(flow)
+            self.log(f"web page: approved change '{flow.description}' for {flow.user}: {flow.flash}")
 
     def usable(self, user: str) -> bool:
         """An account that exists and has at least one device that may approve (pam.run would let anyone else straight in)."""
@@ -374,7 +452,9 @@ class WebApp:
                 try:
                     flow.result_url, flow.flash = flow.on_approved()
                 except Exception as exc:
-                    flow.result_url, flow.flash = "/keys", f"That did not work: {exc}"
+                    flow.result_url = "/admin" if flow.description == "approving the completed Thessley installation" else "/keys"
+                    flow.flash = f"That did not work: {exc}"
+                    self.log(f"web page: approved change '{flow.description}' failed: {exc!r}")
                 finally:
                     flow.on_approved = None
             return flow.result_url, flow.flash
@@ -382,12 +462,14 @@ class WebApp:
     def new_session(self, user: str) -> Session:
         s = Session(user, self.settings()["session_minutes"])
         with self.lock:
-            self.sessions[s.token] = s
+            self.sessions[self.token_key(s.token)] = s
+        self.save_sessions()
         return s
 
     def drop_session(self, token: str) -> None:
         with self.lock:
-            self.sessions.pop(token, None)
+            self.sessions.pop(self.token_key(token), None)
+        self.save_sessions()
 
     # -- what a signed-in account may touch
     def target(self, session: Session, wanted: str | None) -> str | None:
@@ -520,18 +602,15 @@ class WebApp:
             return "/admin", f"SSH access {action} for {username}. Existing SSH sessions remain open."
         return run
 
-    def change_ssh_rollback(self, action: str, minutes: int = 10):
+    def change_install_approval(self):
         def run():
-            helper = "/usr/local/sbin/thessley-ssh-config-rollback"
-            args = [helper, action]
-            if action == "arm":
-                args.append(str(minutes))
-            result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True,
+            helper = "/usr/local/sbin/thessley-install-rollback"
+            result = subprocess.run([helper, "approve"], stdin=subprocess.DEVNULL, capture_output=True,
                                     text=True, timeout=20, check=False)
             output = (result.stdout or result.stderr).strip()
             if result.returncode:
-                raise RuntimeError(output[-800:] or "The rollback helper failed without a message.")
-            return "/admin", output or "Rollback action completed."
+                raise RuntimeError(output[-800:] or "The installation approval helper failed without a message.")
+            return "/admin", output or "Installation approved."
         return run
 
     # -- per-key details
@@ -551,7 +630,9 @@ class WebApp:
     def key_details(self, user: str, device: dict, usage: dict) -> list[tuple[str, str]]:
         """Everything worth knowing about one key, as (name, value) rows."""
         cred = device["credential_id"]
-        rows = attestation_facts(device.get("attestation_chain") or [], device.get("attestation")) + public_key_facts(device.get("public_key", ""))
+        rows = (attestation_facts(device.get("attestation_chain") or [], device.get("attestation"),
+                                  str(device.get("attestation_status") or ""), str(device.get("attestation_reason") or ""))
+                + public_key_facts(device.get("public_key", "")))
         count, when, ip = usage.get(cred, (0, "", ""))
         rows.append(("Approvals in the log", f"{count}" + (f", the last on {when} from {ip}" if count else "")))
         try:
@@ -635,21 +716,49 @@ def tpm_proof_facts(record: dict | None) -> list[tuple[str, str]]:
     return [("TPM 2.0 proof", f"The app claimed a TPM-held key but this computer could not verify it: {record.get('reason', 'no reason given')}.")]
 
 
-def attestation_facts(chain: list[str], record: dict | None = None) -> list[tuple[str, str]]:
-    """What a stored attestation chain (a device) or this computer's own TPM check (an app) says about a key. A device's chain
-    is kept but not checked against a root of trust."""
+# What the enrolment-time check concluded, in words a person can act on.
+KEY_STATUS_TEXT = {
+    "verified_tee": "Verified: the key lives in this phone's TEE (checked back to Google's attestation root).",
+    "verified_strongbox": "Verified: the key lives in this phone's StrongBox secure chip (checked back to Google's attestation root).",
+    "verified_software": "Genuine, but software-only: this phone has no hardware key store, so the key can be extracted if the "
+                         "phone is rooted or compromised.",
+}
+KEY_REASON_TEXT = {
+    "challenge_mismatch": "the certificate was made for a different enrolment",
+    "untrusted_attestation_root": "the certificate chain does not lead to Google",
+    "revocation_status_unavailable": "Google's revocation list could not be reached",
+    "missing_key_description": "the certificate carries no attestation record",
+    "attested_key_mismatch": "the attested key is not the key this device signs with",
+    "certificate_out_of_validity": "the certificate has expired",
+    "invalid_attestation_chain_length": "no usable certificate chain was sent",
+}
+
+
+def key_protection_facts(status: str, reason: str = "") -> list[tuple[str, str]]:
+    """The verdict this computer reached about where the phone's key lives."""
+    if status in KEY_STATUS_TEXT:
+        return [("Key protection", KEY_STATUS_TEXT[status])]
+    if status == "unverified":
+        why = KEY_REASON_TEXT.get(reason) or reason or "no attestation certificate was sent"
+        return [("Key protection", f"Not verified: {why}.")]
+    return [("Key protection", "Not checked: this device enrolled before the computer verified attestation.")]
+
+
+def attestation_facts(chain: list[str], record: dict | None = None,
+                      status: str = "", reason: str = "") -> list[tuple[str, str]]:
+    """What a stored attestation chain (a device) or this computer's own TPM check (an app) says about a key."""
     if not chain:
         if record and record.get("level") == "tpm":
             return [("Kind", "An app key (Thessley Passkey desktop app) held in a TPM chip, proven at enrolment.")] + tpm_proof_facts(record)
         return [("Kind", "An app key (Thessley Passkey desktop app): no hardware attestation was sent. Its protection (PIN, TPM chip, "
                          "security key) is set on that computer."),
                 ("Hardware attestation", "none")] + tpm_proof_facts(record)
-    facts = [("Kind", "A phone key (Android Keystore)")]
+    facts = [("Kind", "A phone key (Android Keystore)")] + key_protection_facts(status, reason)
     try:
         certs = [x509.load_der_x509_certificate(base64.b64decode(c)) for c in chain]
     except Exception:
         return facts + [("Hardware attestation", f"{len(chain)} certificates stored, but they could not be read")]
-    facts.append(("Hardware attestation", f"{len(certs)} certificates stored; this computer does not check them against a root of trust"))
+    facts.append(("Hardware attestation", f"{len(certs)} certificates stored and checked against Google's roots at enrolment"))
     try:
         ext = certs[0].extensions.get_extension_for_oid(x509.ObjectIdentifier(ATTESTATION_OID))
         info = parse_key_description(ext.value.value)
@@ -916,10 +1025,30 @@ async function tick() {
   if (again) setTimeout(tick, 1500);
 }
 tick();
+// A phone browser is throttled while the person is in the app approving:
+// ask again as soon as this page is back in front instead of waiting for the timer.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+window.addEventListener('focus', () => tick());
+window.addEventListener('pageshow', () => tick());
 """ % json.dumps(flow.id)
     return (f'<div class="card"><h2 style="margin-top:0">{esc(heading)}</h2><p class="dim">{esc(note)}</p>'
             f'<div id="live"><p class="dim">Getting the request ready…</p></div></div>'
             f'<script nonce="{esc(nonce)}">{script}</script>')
+
+
+KEY_BADGES = {"verified_tee": ("ok", "verified (TEE)"),
+               "verified_strongbox": ("ok", "verified (StrongBox)"),
+               "verified_software": ("bad", "software-only"),
+               "unverified": ("bad", "not verified")}
+
+
+def key_badge(device: dict) -> str:
+    """A one-word verdict next to the device name, so nobody has to open Details to see it."""
+    status = str(device.get("attestation_status") or "")
+    if not (device.get("attestation_chain") or []) and (device.get("attestation") or {}).get("level") == "tpm":
+        return '<span class="ok">key TPM verified</span>'
+    cls, text = KEY_BADGES.get(status, ("dim", "protection not checked"))
+    return f'<span class="{cls}">key {esc(text)}</span>'
 
 
 def key_cards(user: str, viewer: Session, devices: list[dict], details, empty: str) -> str:
@@ -933,7 +1062,8 @@ def key_cards(user: str, viewer: Session, devices: list[dict], details, empty: s
         vpn = f'<div class="dim">VPN approvals from {esc(d["vpn_host"])}</div>' if d.get("vpn_host") else ""
         rows.append(
             f'<div class="card"><strong>{esc(d.get("label", ""))}</strong> '
-            f'{"<span class=bad>(switched off)</span>" if off else "<span class=ok>(active)</span>"}'
+            f'{"<span class=bad>(switched off)</span>" if off else "<span class=ok>(active)</span>"} '
+            f'{key_badge(d)}'
             f'<div class="dim">Added {esc(when)} · last used {esc(used)}</div>{vpn}<div class="mono dim">{esc(cred)}</div>'
             + key_details_html(details(d) if details else []) +
             f'<div class="row">'
@@ -1388,37 +1518,30 @@ def admin_page(viewer: Session, flash: str) -> str:
     on = lambda flag: "on" if flag else "off"  # noqa: E731
     hidden = f'<input type="hidden" name="csrf" value="{esc(viewer.csrf)}">'
 
-    rollback_helper = "/usr/local/sbin/thessley-ssh-config-rollback"
+    rollback_helper = "/usr/local/sbin/thessley-install-rollback"
     try:
         result = subprocess.run([rollback_helper, "status"], stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=3, check=False)
         rollback_status = (result.stdout or result.stderr).strip()
         if result.returncode:
-            rollback_status = "Could not check the SSH/PAM rollback timer: " + (rollback_status[-500:] or "helper error")
+            rollback_status = "Could not check installation approval: " + (rollback_status[-500:] or "helper error")
     except (OSError, subprocess.SubprocessError) as exc:
-        rollback_status = f"Could not check the SSH/PAM rollback timer: {exc}"
-    rollback_pending = ("No Thessley SSH configuration rollback timer is pending." not in rollback_status
-                       and not rollback_status.startswith("Could not check"))
+        rollback_status = f"Could not check installation approval: {exc}"
+    rollback_pending = ("awaiting approval" in rollback_status.lower()
+                        or "needs attention" in rollback_status.lower())
+    rollback_error = rollback_status.startswith("Could not check") or "needs attention" in rollback_status.lower()
     rollback = (
-        '<section class="admin-rollback"><h2>SSH / PAM setup rollback</h2>'
-        '<div class="card"><strong>Rollback timer</strong>'
+        '<section class="admin-rollback"><h2>Installation approval</h2>'
+        '<div class="card"><strong>Setup status</strong>'
         f'<pre class="dim" style="white-space:pre-wrap;overflow-wrap:anywhere">{esc(rollback_status)}</pre>'
-        '<p class="dim">This timer restores SSH and PAM configuration plus Thessley SSH login policies if a change prevents a new SSH login. '
-        'It does not roll back phone keys, VPN configuration, or the whole Thessley app. Keep this browser and your current SSH session open while testing.</p>'
+        '<p class="dim">A successful Thessley core install starts this timer automatically. Verify phone approval and the web admin page, then approve the installation here. '
+        'If you do not approve it before the timer expires, the previous core app files and service state are restored. A reboot restarts the countdown. '
+        'This does not roll back enrolled phones, VPN configuration, or optional SSH/PAM policy changes.</p>'
         + (f'<form method="post" action="/admin/set" class="row">{hidden}'
-           '<input type="hidden" name="name" value="ssh_rollback">'
-           '<input type="hidden" name="action" value="cancel">'
-           '<button>Keep current SSH setup and stop rollback</button></form>' if rollback_pending else
-           (f'<p class="dim">Rollback controls are unavailable until the timer status can be read.</p>'
-            if rollback_status.startswith("Could not check") else
-           f'<form method="post" action="/admin/set" class="row">{hidden}'
-           '<input type="hidden" name="name" value="ssh_rollback">'
-           '<input type="hidden" name="action" value="arm">'
-           '<label for="ssh-rollback-minutes">Rollback after</label>'
-           '<select id="ssh-rollback-minutes" name="minutes">'
-           '<option value="10" selected>10 minutes</option><option value="15">15 minutes</option>'
-           '<option value="30">30 minutes</option><option value="60">60 minutes</option></select> '
-           '<button>Arm SSH rollback</button></form>'))
+           '<input type="hidden" name="name" value="install_approval">'
+           '<button>Approve this installation</button></form>' if rollback_pending else
+           (f'<p class="dim">The installation status needs attention. Use the installer recovery instructions before approving it.</p>'
+            if rollback_error else '<p class="dim">There is no installation waiting for approval.</p>'))
         + '</div></section>')
 
     def toggle(name: str, label: str, state: bool, explain: str) -> str:
@@ -1999,22 +2122,8 @@ def make_handler(app: WebApp):
 
         def admin_action(self, data: dict, s: Session) -> None:
             name, value = data.get("name", ""), (data.get("value") or "").strip()
-            if name == "ssh_rollback":
-                action = data.get("action", "")
-                if action == "arm":
-                    try:
-                        minutes = int(data.get("minutes", ""))
-                    except ValueError:
-                        minutes = 0
-                    if minutes not in (10, 15, 30, 60):
-                        return self.html(400, "Not valid", flash_html("Choose a rollback timer from the list."), s)
-                    description = f"arming a {minutes}-minute SSH/PAM rollback timer"
-                elif action == "cancel":
-                    minutes = 10
-                    description = "keeping the current SSH/PAM setup and stopping its rollback timer"
-                else:
-                    return self.html(400, "Not valid", flash_html("Choose Arm or Keep current setup."), s)
-                self.start_change(s, description, app.change_ssh_rollback(action, minutes))
+            if name == "install_approval":
+                self.start_change(s, "approving the completed Thessley installation", app.change_install_approval())
                 return
             if name == "ssh_policy":
                 profile = data.get("profile")

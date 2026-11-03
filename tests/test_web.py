@@ -92,6 +92,7 @@ class WebBase(unittest.TestCase):
         self.device = store.add_device(USER, self.phone.spki, "My phone", [])
         self.logs = []
         self.app = web.WebApp(journal=lambda: [], qr=lambda link: b"<svg xmlns='http://www.w3.org/2000/svg'/>", log=self.logs.append)
+        self.app.sessions_path = os.path.join(self.tmp.name, "web-sessions.json")
         cert, key = os.path.join(self.tmp.name, "c.pem"), os.path.join(self.tmp.name, "k.pem")
         web.ensure_cert(cert, key, ["127.0.0.1"])
         self.httpd = web.make_server(self.app, "127.0.0.1", 0, cert, key)
@@ -617,6 +618,102 @@ class WebTest(WebBase):
         self.assertEqual(os.stat(key).st_mode & 0o777, 0o600)
 
 
+class SessionPersistenceTest(unittest.TestCase):
+    """Signing in must survive a restart of the service (and a reboot)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "web-sessions.json")
+
+    def app(self):
+        return web.WebApp(journal=lambda: [], qr=lambda link: b"", log=lambda line: None,
+                          sessions_path=self.path)
+
+    def test_a_sign_in_survives_a_restart(self):
+        first = self.app()
+        session = first.new_session("ubuntu")
+        session.last = web.now()
+        first.save_sessions()
+        second = self.app()          # a fresh process: same file
+        restored = second.session(session.token)
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.user, "ubuntu")
+        self.assertEqual(restored.csrf, session.csrf)
+
+    def test_the_raw_cookie_never_reaches_the_disk(self):
+        app = self.app()
+        session = app.new_session("ubuntu")
+        app.save_sessions()
+        with open(self.path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertNotIn(session.token, text)
+        self.assertIn(web.WebApp.token_key(session.token), text)
+
+    def test_the_file_is_readable_only_by_the_owner(self):
+        app = self.app()
+        app.new_session("ubuntu")
+        app.save_sessions()
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_an_expired_sign_in_is_not_restored(self):
+        app = self.app()
+        session = app.new_session("ubuntu")
+        app.save_sessions()
+        later = web.now() + web.SESSION_MAX_SECONDS + 60
+        original = web.now
+        web.now = lambda: later
+        try:
+            self.assertIsNone(self.app().session(session.token))
+        finally:
+            web.now = original
+
+    def test_signing_out_forgets_it_on_disk(self):
+        app = self.app()
+        session = app.new_session("ubuntu")
+        app.drop_session(session.token)
+        self.assertIsNone(self.app().session(session.token))
+
+    def test_a_tampered_file_does_not_break_startup(self):
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        self.assertEqual(len(self.app().sessions), 0)
+
+
+class ChangeWithoutPollingTest(WebBase):
+    """An approved change runs in the approval thread: a phone browser that stopped polling must not hang it."""
+
+    def test_the_change_runs_as_soon_as_the_phone_answers(self):
+        ran = []
+
+        def action():
+            ran.append(True)
+            return "/keys", "done"
+
+        flow = web.Flow("change", USER, "add a device", on_approved=action)
+        original = web.pam.run
+        web.pam.run = lambda env, say=None, wait=0: web.pam.OK
+        try:
+            self.app._approval_thread(flow, web.SERVICE_CHANGE, "127.0.0.1")
+        finally:
+            web.pam.run = original
+        self.assertEqual(flow.state, "approved")
+        self.assertEqual(flow.flash, "done")
+        self.assertEqual(ran, [True])
+
+    def test_a_refused_change_is_not_run(self):
+        ran = []
+        flow = web.Flow("change", USER, "add a device", on_approved=lambda: ran.append(True))
+        original = web.pam.run
+        web.pam.run = lambda env, say=None, wait=0: web.pam.REFUSED
+        try:
+            self.app._approval_thread(flow, web.SERVICE_CHANGE, "127.0.0.1")
+        finally:
+            web.pam.run = original
+        self.assertEqual(flow.state, "refused")
+        self.assertEqual(ran, [])
+
+
 class KeyDetailsTest(WebBase):
     """What the page says about each key."""
 
@@ -656,7 +753,33 @@ class KeyDetailsTest(WebBase):
         self.assertIn("A phone key (Android Keystore)", body)
         self.assertIn("StrongBox (separate secure chip)", body)
         self.assertIn("Trusted environment (TEE)", body)
-        self.assertIn("does not check them against a root of trust", body)  # said plainly: stored, not verified
+        self.assertIn("roots at enrolment", body)
+        # Enrolled before the check existed: said plainly instead of implying a verdict.
+        self.assertIn("Not checked", body)
+
+    def test_a_verified_key_says_so_on_the_card_and_in_the_details(self):
+        store.add_device(USER, FakePhone().spki, "Verified phone",
+                         self.fake_android_chain(key_level=1, attestation_level=1),
+                         key_attestation_status="verified_tee",
+                         key_attestation_reason="hardware_attestation_valid")
+        body = self.keys_body()
+        self.assertIn("key verified (TEE)", body)
+        self.assertIn("Verified: the key lives in this phone", body)
+
+    def test_an_unverified_key_says_why(self):
+        store.add_device(USER, FakePhone().spki, "Odd phone", self.fake_android_chain(1, 1),
+                         key_attestation_status="unverified",
+                         key_attestation_reason="untrusted_attestation_root")
+        body = self.keys_body()
+        self.assertIn("key not verified", body)
+        self.assertIn("does not lead to Google", body)
+
+    def test_a_software_only_key_is_called_out(self):
+        store.add_device(USER, FakePhone().spki, "Old phone", self.fake_android_chain(0, 0),
+                         key_attestation_status="verified_software", key_attestation_reason="software_backed")
+        body = self.keys_body()
+        self.assertIn("key software-only", body)
+        self.assertIn("no hardware key store", body)
 
     def test_a_tpm_key_proven_at_enrolment_says_so_with_the_maker(self):
         store.add_device(USER, FakePhone().spki, "Desktop in a TPM", [],

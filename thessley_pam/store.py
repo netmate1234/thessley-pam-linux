@@ -19,7 +19,7 @@ USERS = os.path.join(BASE, "users")
 # World-readable list of user names that have at least one phone, one per line. The GNOME Shell extension runs
 # as the gdm user (login screen) or as the user (lock screen) and can't read BASE; it uses this to decide
 # whether to offer the QR code at all. Holds names only, no keys.
-ENROLLED = "/etc/thessley-pam-enrolled"
+ENROLLED = "/var/lib/thessley-pam/enrolled-users"
 
 
 def _check_user(username: str) -> None:
@@ -86,14 +86,7 @@ def write_enrolled_list() -> None:
             if any(not d.get("disabled") for d in json.load(f).get("devices", [])):
                 names.append(entry[:-5])
     text = "".join(n + "\n" for n in names)
-    try:
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".thessley-pam-enrolled.")
-    except OSError:
-        # The admin web service sees /etc read-only except this one file (ReadWritePaths), so it can't make a
-        # temp file next to it; rewrite the file in place instead. It is tiny, so a torn read is not a concern.
-        with open(ENROLLED, "w") as f:
-            f.write(text)
-        return
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".enrolled-users.")
     with os.fdopen(fd, "w") as f:
         f.write(text)
     os.chmod(tmp, 0o644)
@@ -146,7 +139,9 @@ def all_users() -> list[str]:
 
 
 def add_device(username: str, public_key: str, label: str, attestation_chain: list[str],
-               attestation: dict | None = None, vpn_host: str = "") -> dict:
+               attestation: dict | None = None, vpn_host: str = "",
+               key_attestation_status: str = "", key_attestation_reason: str = "",
+               key_attestation_challenge: str = "") -> dict:
     """Store one phone or app. `attestation` is what this computer itself checked at enrolment (TPM proof), if anything:
     {"level": "tpm", "maker": ..., "model": ..., "checked_at": ...} or {"level": "unverified", "reason": ...}."""
     data = load(username)
@@ -160,11 +155,31 @@ def add_device(username: str, public_key: str, label: str, attestation_chain: li
     }
     if attestation:
         device["attestation"] = attestation
+    if key_attestation_status:
+        device["attestation_status"] = key_attestation_status
+        device["attestation_reason"] = key_attestation_reason
+    if key_attestation_challenge:
+        # Keep the nonce the key's attestation certificate was made for. It is not
+        # secret; keeping it lets `verify-keys` re-check the challenge later. Without
+        # it a re-check can only follow the chain, not prove this enrolment.
+        device["attestation_challenge"] = key_attestation_challenge
     if vpn_host:  # enrolled for the VPN (thessley-pam vpn enroll): listed apart from the ssh and sudo devices
         device["vpn_host"] = vpn_host
     data["devices"].append(device)
     save(username, data)
     return device
+
+
+def set_key_attestation(username: str, credential_id: str, status: str, reason: str = "") -> bool:
+    """Record (or refresh) what this computer concluded about where a device's private key lives."""
+    data = load(username)
+    for d in data["devices"]:
+        if d["credential_id"] == credential_id:
+            d["attestation_status"] = status
+            d["attestation_reason"] = reason
+            save(username, data)
+            return True
+    return False
 
 
 def set_vpn_host(username: str, credential_id: str, host: str) -> bool:

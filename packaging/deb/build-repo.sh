@@ -56,14 +56,16 @@ The HTTPS web admin page is enabled by default (answer n to skip); other
 optional choices default to No. The guided installer does not edit SSH login
 policy or overwrite existing OpenVPN configuration. It supports Ubuntu 24.04,
 Ubuntu 26.04, and Debian 13. It can optionally create a new isolated OpenVPN
-server with Thessley QR approval. VPN-to-LAN forwarding/NAT is enabled by
-default when a LAN route is configured; answer n to skip it. To run it from the
+server with Thessley QR approval. VPN-to-LAN forwarding/NAT is enabled
+automatically when a LAN route is selected; enter none to skip LAN access. To run it from the
 source directory:
 
   sudo ./guided-install.sh
 
-Before editing SSH/PAM login policy, arm the provided timed SSH configuration
-rollback.
+The shared service starts a 60-minute installation-approval timer after its
+health check. Verify the phone approval and web page, then approve in Admin or
+run `sudo thessley-install-rollback approve`; otherwise previous core app files
+and service state are restored. For SSH/PAM policy changes, see docs/SSH.md.
 
 Removing this package removes the staged source and documentation only. If
 install.sh or an optional component installer was run, use its documented

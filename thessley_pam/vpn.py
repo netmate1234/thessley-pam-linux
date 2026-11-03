@@ -239,10 +239,14 @@ def render_page(flow: Flow, nonce: str = "") -> str:
     # answer came). A page that reloads itself every few seconds makes the QR code flicker, which cannot be scanned.
     poll = ""
     if not flow.finished.is_set() and nonce:
-        poll = (f'<script nonce="{esc(nonce, quote=True)}">(function(){{var had={"true" if flow.link else "false"};'
-                f'function tick(){{fetch("/vpn/{flow.id}.json",{{cache:"no-store"}}).then(function(r){{return r.json()}})'
-                '.then(function(s){if(s.finished||s.has_link!==had){location.reload();return}setTimeout(tick,2000)})'
-                '.catch(function(){setTimeout(tick,4000)})}tick()})();</script>')
+        poll = (f'<script nonce="{esc(nonce, quote=True)}">(function(){{var had={"true" if flow.link else "false"};var busy=false;'
+                f'function tick(){{if(busy)return;busy=true;fetch("/vpn/{flow.id}.json",{{cache:"no-store"}}).then(function(r){{return r.json()}})'
+                '.then(function(s){busy=false;if(s.finished||s.has_link!==had){location.reload();return}setTimeout(tick,2000)})'
+                '.catch(function(){busy=false;setTimeout(tick,4000)})}'
+                # The phone went to the Thessley app to approve; its browser timers are
+                # frozen meanwhile, so ask again the moment the page is back in front.
+                'tick();document.addEventListener("visibilitychange",function(){if(!document.hidden)tick()});'
+                'window.addEventListener("focus",tick);window.addEventListener("pageshow",tick)})();</script>')
     if flow.state == "approved":
         body = '<p class="ok"><strong>Approved.</strong> The VPN is connecting. You can close this page.</p>'
     elif flow.finished.is_set():

@@ -8,6 +8,7 @@ umask 077
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die 'Run with sudo: sudo bash install-openvpn-server.sh'
 [[ -x /usr/local/sbin/thessley-pam ]] || die 'Install the Thessley Linux package first (Linux installation guide).'
+src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 [[ -r /etc/os-release ]] || die 'Cannot identify this Linux distribution.'
 . /etc/os-release
 case "${ID:-}:${VERSION_ID:-}" in
@@ -27,6 +28,7 @@ if [[ -e $PKI ]]; then
   PKI_RESUME=yes
   printf 'Found an existing Thessley CA at %s; it will be preserved and reused.\n' "$PKI"
 fi
+
 
 read -r -p 'Public DNS name or IP address reachable by your phone: ' HOST
 [[ -n $HOST ]] || die 'A real public DNS name or IP address is required; do not use an example value.'
@@ -76,19 +78,14 @@ DEVICE=${DEVICE:-phone}
 printf '\nThis will install OpenVPN/Easy-RSA and create a new isolated server instance on Ubuntu 24.04/26.04 LTS or Debian 13.\n'
 printf 'It will not change SSH/PAM, router settings, or an existing OpenVPN configuration.\n'
 printf 'Phone approval page: TCP 47830. VPN transport: UDP %s.\n' "$PORT"
-read -r -p 'Continue? [y/N] ' CONFIRM
-[[ $CONFIRM == y || $CONFIRM == Y ]] || exit 0
-
+if [[ ${THESSLEY_GUIDED_VPN_APPROVED:-0} != 1 ]]; then
+  read -r -p 'Continue with this VPN setup and the listed firewall changes? [y/N] ' CONFIRM
+  [[ $CONFIRM == y || $CONFIRM == Y ]] || exit 0
+fi
 UFW_ALLOW=no
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  printf '\nUFW is active. The VPN needs inbound UDP %s and TCP 47830 (phone approvals).\n' "$PORT"
-  read -r -p 'Add only these two UFW allow rules? [Y/n] ' FIREWALL_CONFIRM
-  case "$FIREWALL_CONFIRM" in
-    ''|y|Y|yes|YES|Yes)
-      UFW_ALLOW=yes
-      ;;
-    *) printf 'No UFW rules changed. Add those ports yourself before connecting remotely.\n' ;;
-  esac
+  printf '\nUFW is active. Continuing adds only inbound UDP %s and TCP 47830 (phone approvals).\n' "$PORT"
+  UFW_ALLOW=yes
 else
   printf '\nUFW is not active; no host firewall was changed. Ensure another firewall allows UDP %s and TCP 47830.\n' "$PORT"
 fi
@@ -102,6 +99,8 @@ if [[ $PKI_RESUME == yes ]]; then
   [[ -f $MIGRATE_CA ]] || die "This encrypted CA must be migrated once. Run: sudo bash /opt/thessley-pam-linux/migrate-vpn-ca-unencrypted.sh"
   bash "$MIGRATE_CA"
 fi
+
+"$src/prepare-enrolled-list.sh"
 
 install -d -o root -g root -m 0755 /etc/openvpn/server
 if [[ $PKI_RESUME == no ]]; then
@@ -185,9 +184,10 @@ if [[ $LAN_ROUTE != none ]]; then
 fi
 chmod 0644 "$CONF"
 
-# Ensure the CA tree is traversable by the dropped-privilege OpenVPN process,
-# without making any private key readable to it.
-chmod 0711 "$PKI" "$PKI/pki"
+# Keep the CA and its PKI writable by root for future Easy-RSA operations, and
+# inaccessible to the dropped-privilege OpenVPN process. OpenVPN reads its
+# public CA/CRL and server key material from /etc/openvpn/server, not this tree.
+chmod 0700 "$PKI" "$PKI/pki"
 chmod 0644 "$PKI/pki/crl.pem"
 
 # Install the Thessley OpenVPN approval helper and its dedicated daemon.
@@ -218,13 +218,12 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=/etc/thessley-pam /etc/thessley-pam-enrolled /run/thessley-pam-vpn
+ReadWritePaths=/etc/thessley-pam /var/lib/thessley-pam /run/thessley-pam-vpn
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 chmod 0644 "$VPN_UNIT"
-[[ -e /etc/thessley-pam-enrolled ]] || install -o root -g root -m 0644 /dev/null /etc/thessley-pam-enrolled
 systemctl daemon-reload
 /usr/local/sbin/thessley-pam vpn public-host "$HOST"
 /usr/local/sbin/thessley-pam vpn server-port "$PORT"
@@ -235,8 +234,17 @@ systemctl daemon-reload
 # and can issue a client key; logins remain refused until an approving phone
 # is associated with the VPN host.
 /usr/local/sbin/thessley-pam vpn on
-install -d -o root -g root -m 0711 "$PKI" "$PKI/pki"
+install -d -o root -g root -m 0700 "$PKI" "$PKI/pki"
 install -o root -g root -m 0644 "$PKI/pki/crl.pem" /etc/openvpn/server/crl.pem
+
+# systemd applies ReadWritePaths when it creates the web service mount
+# namespace. The web service may have started before this PKI existed, so
+# refresh it now to enable future VPN client certificate issuance.
+if systemctl is-active --quiet thessley-pam-web.service; then
+  echo 'Refreshing the Thessley web service sandbox for the new VPN PKI...'
+  systemctl restart thessley-pam-web.service
+fi
+
 systemctl enable --now openvpn-server@thessley
 if [[ $UFW_ALLOW == yes ]]; then
   ufw allow "$PORT/udp" comment 'Thessley OpenVPN transport'

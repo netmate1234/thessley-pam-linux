@@ -34,7 +34,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from . import grants, listener, machine, pam, protocol, store, tpmproof
+from . import attestation, grants, listener, machine, pam, protocol, store, tpmproof
 
 DEFAULT_PORT = 47810
 ENROLL_WAIT = 180   # seconds the QR code stays valid
@@ -213,15 +213,27 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
             return 409, {"result": "error", "message": "This code has already been used."}
 
         tpm = body.get("tpm")
-        attestation = check_tpm(public_key, tpm if isinstance(tpm, dict) else None)
+        tpm_attestation = check_tpm(public_key, tpm if isinstance(tpm, dict) else None)
+        # Where the phone's signing key actually lives (TEE, StrongBox, or
+        # software), proven against Google's attestation roots. Without this
+        # the phone and the admin page could only say "not verified".
+        try:
+            expected_key = base64.b64decode(public_key, validate=True)
+        except (ValueError, TypeError):
+            expected_key = None
+        key_attestation = attestation.verify_chain(
+            chain, expected_challenge=nonce.encode("ascii"), expected_public_key_spki=expected_key)
         pending.put({"client_ip": client_ip, "public_key": public_key, "label": label, "chain": chain,
-                     "attestation": attestation})
+                     "attestation": tpm_attestation, "key_attestation": key_attestation,
+                     "attestation_challenge": nonce})
         if not decided.wait(confirm_wait + 10) or not decision.get("ok"):
             if decision.get("error"):
                 return 500, {"result": "error", "message": "The computer could not save this device: " + decision["error"]}
             return 200, {"result": "denied", "message": "Not confirmed on the computer."}
         return 200, {"result": "ok", "credential_id": decision["credential_id"], "username": username,
-                     "hostname": host, "attestation": "tpm" if (attestation or {}).get("level") == "tpm" else ""}
+                     "hostname": host, "attestation": "tpm" if (tpm_attestation or {}).get("level") == "tpm" else "",
+                     "attestation_status": key_attestation.get("status", "unverified"),
+                     "attestation_reason": key_attestation.get("reason", "")}
 
     path = f"/thessley-pam/v1/enroll/{request_id}/respond"
     tpm_path = f"/thessley-pam/v1/enroll/{request_id}/tpm-challenge"
@@ -256,11 +268,21 @@ def _enroll_flow(username: str, port: int, say, ask_yes, show_qr=None, cancel: t
         if att:
             say("    TPM:   " + (f"verified, a genuine TPM 2.0 chip ({(att['maker'] + ' ' + att['model']).strip() or 'maker not named'})"
                                  if att["level"] == "tpm" else f"claimed but NOT verified ({att['reason']})") + "\n")
+        key = item.get("key_attestation") or {}
+        verdict = {"verified_tee": "verified, the key lives in hardware (TEE)",
+                   "verified_strongbox": "verified, the key lives in StrongBox",
+                   "verified_software": "software-backed (this phone has no hardware key store)"}.get(
+                       key.get("status"), f"NOT verified ({key.get('reason', 'no attestation was sent')})")
+        say("    Key:   " + verdict + "\n")
         ok = ask_yes("Does the device show the same code? Type yes to add it: ", confirm_wait)
         try:
             if ok:
+                key = item.get("key_attestation") or {}
                 device = store.add_device(username, item["public_key"], item["label"], item["chain"], item.get("attestation"),
-                                      vpn_host=(link_extra or {}).get("vh", ""))
+                                          vpn_host=(link_extra or {}).get("vh", ""),
+                                          key_attestation_status=str(key.get("status", "unverified")),
+                                          key_attestation_reason=str(key.get("reason", "")),
+                                          key_attestation_challenge=str(item.get("attestation_challenge", "")))
                 decision.update(ok=True, credential_id=device["credential_id"])
         except OSError as e:
             decision["error"] = str(e)
@@ -447,6 +469,45 @@ def cmd_self_enroll(args) -> int:
     grants.set_self_enroll(args.state == "on")
     print("Users may now add their own first device." if args.state == "on"
           else "Only administrators can add devices now.")
+    return 0
+
+
+def cmd_verify_keys(args) -> int:
+    """Re-check the attestation chain of every stored device and record the verdict.
+
+    Devices enrolled before this check existed have no verdict yet, and older ones
+    did not keep their enrolment nonce, so the challenge cannot be compared: the
+    chain still proves where the key lives, but not that this enrolment made it.
+    Such a check never weakens a verdict that was reached with the nonce.
+    """
+    _need_root()
+    users = [args.user] if args.user else store.all_users()
+    changed = 0
+    for user in users:
+        for device in store.devices(user):
+            chain = device.get("attestation_chain") or []
+            if not chain:
+                status, reason = "unverified", "no_attestation_chain"
+            else:
+                try:
+                    public_key = base64.b64decode(device.get("public_key", ""), validate=True)
+                except (ValueError, TypeError):
+                    public_key = None
+                challenge = str(device.get("attestation_challenge") or "")
+                result = attestation.verify_chain(
+                    chain,
+                    expected_challenge=challenge.encode("ascii") if challenge else None,
+                    expected_public_key_spki=public_key)
+                status, reason = result.get("status", "unverified"), result.get("reason", "")
+                if (not challenge and status == device.get("attestation_status")
+                        and device.get("attestation_reason") == "hardware_attestation_valid"):
+                    reason = "hardware_attestation_valid"  # enrolment compared the nonce; keep that verdict
+            if device.get("attestation_status") != status or device.get("attestation_reason") != reason:
+                store.set_key_attestation(user, device["credential_id"], status, reason)
+                changed += 1
+            print(f"{user:<12} {device['credential_id']}  {device.get('label', ''):<24}  {status}"
+                  + (f"  ({reason})" if reason and status == "unverified" else ""))
+    print(f"{changed} device(s) updated.")
     return 0
 
 
@@ -667,6 +728,9 @@ def main(argv=None) -> int:
     sl = sub.add_parser("show-link", help="print the approval link as text under the QR code (for the desktop app)")
     sl.add_argument("state", nargs="?")
     sl.set_defaults(func=cmd_show_link)
+    vk = sub.add_parser("verify-keys", help="re-check where each stored device key lives (TEE, StrongBox, software)")
+    vk.add_argument("--user")
+    vk.set_defaults(func=cmd_verify_keys)
     ps = sub.add_parser("passes", help="list the active device passes")
     ps.set_defaults(func=cmd_passes)
     ep = sub.add_parser("end-pass", help="end device passes now")

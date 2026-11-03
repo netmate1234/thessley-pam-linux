@@ -69,7 +69,7 @@ No. This installer does not modify existing sshd_config,
 PAM login stacks, or OpenVPN server configuration. The separate OpenVPN
 server option creates a new, isolated Thessley instance only when one is not
 already installed. An existing Thessley server and its CA/client keys are
-preserved. VPN-to-LAN forwarding/NAT is enabled by default when a LAN route is configured; answer n to skip it.
+preserved. Selecting a LAN route enables VPN-to-LAN forwarding/NAT automatically; enter `none` to skip the route.
 The GNOME option creates its own password-preserving PAM service and does not
 replace the normal password login.
 INTRO
@@ -205,8 +205,8 @@ if [ -e /etc/openvpn/server/thessley.conf ]; then
     else
         echo "Existing Thessley OpenVPN config preserved. No VPN files were changed."
     fi
-elif ask "Install and configure a new OpenVPN server with Thessley QR approval? It detects the private LAN route; other OpenVPN configurations are left alone."; then
-    bash "$src/install-openvpn-server.sh"
+elif ask "Install a new OpenVPN server with Thessley QR approval? It detects the private LAN route, preserves existing VPN configs, and adds only its required UFW ports if UFW is active."; then
+    THESSLEY_GUIDED_VPN_APPROVED=1 bash "$src/install-openvpn-server.sh"
     vpn_installed=yes
     vpn_server_installed=yes
 elif ask "Install the Thessley QR-approval hook for an existing OpenVPN server? This does not configure or start OpenVPN."; then
@@ -218,6 +218,9 @@ fi
 if [ "$vpn_installed" = yes ]; then
     if [ "$vpn_server_installed" = yes ] && ! grep -q '^push "route ' /etc/openvpn/server/thessley.conf; then
         echo "No LAN route was selected for this new VPN server; skipping VPN-to-LAN forwarding."
+    elif [ "$vpn_server_installed" = yes ]; then
+        echo "Enabling VPN-to-LAN forwarding/NAT for the route selected during VPN setup."
+        enable_vpn_lan_forwarding
     elif ask_yes_default "Enable VPN-to-LAN forwarding/NAT now? This lets VPN clients reach the configured LAN route and changes firewall/IP-forwarding rules."; then
         enable_vpn_lan_forwarding
     else
@@ -229,6 +232,8 @@ cat <<'DONE'
 
 Guided setup finished. The shared approval service is active.
 Enroll another account with: sudo thessley-pam enroll --user ACCOUNT
+After verifying phone approval and the web admin page, approve this installation in Admin or run:
+  sudo thessley-install-rollback approve
 DONE
 echo "Optional component uninstall scripts are in $src."
 
