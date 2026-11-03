@@ -1,5 +1,9 @@
 # thessley-pam-linux
 
+![License](https://img.shields.io/badge/license-GPL--2.0--or--later-7c6cf0?style=flat-square) ![Linux](https://img.shields.io/badge/Linux-PAM-333?style=flat-square) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab?style=flat-square) ![Deck](https://img.shields.io/badge/deck-slides-7c6cf0?style=flat-square)
+
+[![thessley-pam-linux](docs/preview/slide-1.png)](https://netmate1234.github.io/thessley-pam-linux/)
+
 Approve Linux logins — `sudo`, GNOME login and lock, SSH, the keyring and the admin page — with the phone that already holds the key.
 
 **Presentation:** [slides on GitHub Pages](https://netmate1234.github.io/thessley-pam-linux/)
