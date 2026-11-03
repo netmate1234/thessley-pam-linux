@@ -1,5 +1,8 @@
 # thessley-pam-linux
 
+**Presentation:** [HTML slides](https://netmate1234.github.io/thessley-presentations/pam-linux/) · source [`docs/index.html`](docs/index.html)
+
+
 Approve logins to a Linux computer with the Thessley Passkey Android app: `sudo`, the GNOME login and lock screens,
 and `ssh`. The phone holds a key in Android Keystore (hardware-backed when the device supports it), protected by the
 chosen device authentication; the computer only ever holds the matching public key.
