@@ -1,19 +1,17 @@
 # thessley-pam-linux
 
-![License](https://img.shields.io/badge/license-GPL--2.0--or--later-7c6cf0?style=flat-square) ![Linux](https://img.shields.io/badge/Linux-PAM-333?style=flat-square) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab?style=flat-square) ![Deck](https://img.shields.io/badge/deck-slides-7c6cf0?style=flat-square)
+![License](https://img.shields.io/badge/license-GPL--2.0--or--later-7c6cf0?style=flat-square) ![Linux](https://img.shields.io/badge/Linux-PAM-333?style=flat-square) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab?style=flat-square) ![Deck](https://img.shields.io/badge/deck-7c6cf0?style=flat-square)
 
 [![thessley-pam-linux](docs/preview/hero.png)](https://netmate1234.github.io/thessley-pam-linux/)
 
 Approve Linux logins — `sudo`, GNOME login and lock, SSH, the keyring and the admin page — with the phone that already holds the key.
 
-**Presentation:** [slides on GitHub Pages](https://netmate1234.github.io/thessley-pam-linux/)
+**Presentation:** [interactive deck](https://netmate1234.github.io/thessley-pam-linux/)
 
 - The computer shows a QR with its LAN address, port and certificate hash; the app trusts only that certificate.
 - The phone signs an approve/deny with ECDSA P-256; the computer checks it against the enrolled public keys and accepts one answer.
 - SSH needs the key and the phone; one approval covers 4 hours for that user, service and address.
 - Nothing goes through a server of ours — phone and computer talk directly on the local network.
-
-![The four-step approval flow](docs/preview/slide-2.png)
 
 Approve logins to a Linux computer with the Thessley Passkey Android app: `sudo`, the GNOME login and lock screens,
 and `ssh`. The phone holds a key in Android Keystore (hardware-backed when the device supports it), protected by the
