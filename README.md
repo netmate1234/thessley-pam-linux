@@ -17,6 +17,19 @@ Approve logins to a Linux computer with the Thessley Passkey Android app: `sudo`
 and `ssh`. The phone holds a key in Android Keystore (hardware-backed when the device supports it), protected by the
 chosen device authentication; the computer only ever holds the matching public key.
 
+## Quick install
+
+```sh
+sudo apt install qrencode python3-cryptography python3-asn1crypto
+git clone https://github.com/netmate1234/thessley-pam-linux.git
+cd thessley-pam-linux
+sudo ./install.sh            # base: CLI, helper, service
+sudo ./install-login.sh      # optional: GNOME login and lock
+sudo ./install-ssh.sh        # optional: SSH gate
+```
+
+**Verify:** `sudo thessley-pam enroll` prints a QR and `thessley-pam passes` lists active passes.
+
 ## How it works
 
 1. The computer shows a QR code with a link (`thessleypam://...`): its LAN address and port, the SHA-256 of a fresh
