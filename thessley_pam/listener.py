@@ -38,11 +38,8 @@ RawRouteHandler = Callable[[str, dict, bytes, dict[str, str]], tuple[int, dict]]
 class RawBodyRoute:
     """Opt-in route handler that receives the exact request bytes and auth headers."""
 
-    def __init__(self, handler: RawRouteHandler, response_wait: int = 15):
-        if isinstance(response_wait, bool) or not isinstance(response_wait, int) or not 1 <= response_wait <= 125:
-            raise ValueError("Raw route response wait must be between 1 and 125 seconds.")
+    def __init__(self, handler: RawRouteHandler):
         self.handler = handler
-        self.response_wait = response_wait
 
 
 _MACHINE_AUTH_HEADER_NAMES = (
@@ -150,11 +147,7 @@ class SharedRegistration:
             conn.settimeout(10)
             self.conn = conn
             self.reader = conn.makefile("rb", buffering=0)
-            waits = {path: route.response_wait for path, route in self.routes.items()
-                     if isinstance(route, RawBodyRoute) and route.response_wait != 15}
-            payload = json.dumps(
-                {"op": "register", "paths": list(self.routes), "waits": waits}, separators=(",", ":")
-            ).encode() + b"\n"
+            payload = json.dumps({"op": "register", "paths": list(self.routes)}, separators=(",", ":")).encode() + b"\n"
             conn.sendall(payload)
             raw = self.reader.readline(MAX_FRAME + 1)
             if len(raw) > MAX_FRAME or not raw.endswith(b"\n"):

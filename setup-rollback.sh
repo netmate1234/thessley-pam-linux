@@ -8,7 +8,6 @@ readonly TIMER_NAME=thessley-setup-rollback.timer
 readonly SERVICE_NAME=thessley-setup-rollback.service
 readonly TIMER_PATH=/etc/systemd/system/$TIMER_NAME
 readonly SERVICE_PATH=/etc/systemd/system/$SERVICE_NAME
-readonly APPROVAL_UNIT=/etc/systemd/system/thessley-pam-approvals.service
 readonly APP_PATHS=(
     /usr/local/lib/thessley-pam
     /usr/local/sbin/thessley-pam
@@ -96,7 +95,7 @@ UNIT
 }
 
 restore() {
-    local backup path key state enabled active failed=0
+    local backup path key state failed=0
     [[ -r $ACTIVE_BACKUP ]] || die 'no installation snapshot is recorded.'
     backup=$(validate_backup "$(cat "$ACTIVE_BACKUP")")
     systemctl stop thessley-pam-approvals.service >/dev/null 2>&1 || true
@@ -110,27 +109,15 @@ restore() {
         fi
     done
     systemctl daemon-reload || failed=1
-    enabled=$(cat "$backup/service-enabled.state")
-    active=$(cat "$backup/service-active.state")
-    if [[ -e $APPROVAL_UNIT ]]; then
-        if [[ $enabled == enabled ]]; then
-            systemctl enable thessley-pam-approvals.service || failed=1
-        else
-            systemctl disable thessley-pam-approvals.service || failed=1
-        fi
-        if [[ $active == active ]]; then
-            systemctl restart thessley-pam-approvals.service || failed=1
-        else
-            systemctl stop thessley-pam-approvals.service || failed=1
-        fi
-    elif [[ $enabled == enabled || $active == active ]]; then
-        # A snapshot that says the service was enabled or active must contain its
-        # unit file. Treat that as a real restoration failure. If the unit was
-        # absent before the install, its absence is the intended prior state;
-        # systemctl disable/stop on an unknown unit would otherwise turn a
-        # successful rollback into a permanently failed timer.
-        printf 'Snapshot says the approval service was %s/%s, but its unit is absent.\n' "$enabled" "$active" >&2
-        failed=1
+    if [[ $(cat "$backup/service-enabled.state") == enabled ]]; then
+        systemctl enable thessley-pam-approvals.service || failed=1
+    else
+        systemctl disable thessley-pam-approvals.service || failed=1
+    fi
+    if [[ $(cat "$backup/service-active.state") == active ]]; then
+        systemctl restart thessley-pam-approvals.service || failed=1
+    else
+        systemctl stop thessley-pam-approvals.service || failed=1
     fi
     if (( failed )); then
         logger -t thessley-setup-rollback 'restore incomplete; snapshot retained for manual recovery'
@@ -144,14 +131,6 @@ restore() {
 status() {
     if systemctl is-active --quiet "$TIMER_NAME"; then
         [[ -r $ACTIVE_BACKUP ]] || { echo 'Installation rollback needs attention: its snapshot record is missing.'; return 0; }
-        local next
-        next=$(systemctl show "$TIMER_NAME" --property=NextElapseUSecMonotonic --value 2>/dev/null || true)
-        if [[ -z $next || $next == n/a || $next == 0 ]]; then
-            echo 'Installation rollback needs attention: its timer has elapsed or has no scheduled run.'
-            systemctl --no-pager --full status "$SERVICE_NAME" 2>/dev/null | tail -n 12 || true
-            printf 'Pre-install snapshot: %s\n' "$(cat "$ACTIVE_BACKUP")"
-            return 0
-        fi
         systemctl list-timers --all --no-legend "$TIMER_NAME"
         [[ -r $ACTIVE_BACKUP ]] && printf 'Pre-install snapshot: %s\n' "$(cat "$ACTIVE_BACKUP")"
         echo 'This installation is awaiting approval.'

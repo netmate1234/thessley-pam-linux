@@ -45,12 +45,16 @@ chosen device authentication; the computer only ever holds the matching public k
 Install order: `sudo apt install qrencode python3-cryptography python3-asn1crypto`, then `sudo ./install.sh`, then whatever you want from
 the table. The installer validates and stages its Python files before changing the installation, saves the previous code and
 systemd service state under `/var/backups/thessley-pam-install-*`, and restores them if service activation or the TCP 47810
-health check fails. It never edits `/etc/pam.d` or SSH policy: the helper runs as root, so it must not live in a directory
-anyone else can write. Keep the printed backup path until the installation has been verified.
+health check fails. After a successful install it starts a 60-minute installation-approval timer. Verify phone approvals and
+the web page, then approve in Admin or run `sudo thessley-install-rollback approve`; otherwise the previous core app files
+and service state are restored. This timer does not undo phone enrollment, VPN configuration, or optional SSH/PAM policy.
+It never edits `/etc/pam.d` or SSH policy: the helper runs as root, so it must not live in a directory anyone else can write.
+Keep the printed backup path until the installation has been verified.
 
 For an interactive Ubuntu/Debian setup, `sudo ./guided-install.sh` checks the clock diagnostically, updates package lists,
 installs dependencies, enables the HTTPS web admin page by default (answer `n` to skip), and asks about optional integrations,
-including either a new OpenVPN server or an approval hook for an existing server. A UTC mismatch or unavailable web-time comparison is a warning,
+including either a new OpenVPN server or an approval hook for an existing server. Choosing a LAN route for a new VPN enables
+forwarding automatically, so there is no second confirmation prompt; enter `none` to skip LAN access. A UTC mismatch or unavailable web-time comparison is a warning,
 not an install blocker. APT still verifies signed Release metadata dates and may refuse genuinely stale system time; do not
 disable those checks. Phone approvals use a short freshness window, so synchronize the phone and computer clocks.
 
