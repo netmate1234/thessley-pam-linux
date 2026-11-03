@@ -1,5 +1,16 @@
 # thessley-pam-linux
 
+Approve Linux logins — `sudo`, GNOME login and lock, SSH, the keyring and the admin page — with the phone that already holds the key.
+
+**Presentation:** [slides on GitHub Pages](https://netmate1234.github.io/thessley-presentations/pam-linux/)
+
+- The computer shows a QR with its LAN address, port and certificate hash; the app trusts only that certificate.
+- The phone signs an approve/deny with ECDSA P-256; the computer checks it against the enrolled public keys and accepts one answer.
+- SSH needs the key and the phone; one approval covers 4 hours for that user, service and address.
+- Nothing goes through a server of ours — phone and computer talk directly on the local network.
+
+![The four-step approval flow](docs/preview/slide-2.png)
+
 [![thessley-pam-linux — deck](docs/preview/slide-1.png)](https://netmate1234.github.io/thessley-presentations/pam-linux/)
 
 **Interactive deck:** [netmate1234.github.io/thessley-presentations/pam-linux](https://netmate1234.github.io/thessley-presentations/pam-linux/) — arrow keys or click the edges.
