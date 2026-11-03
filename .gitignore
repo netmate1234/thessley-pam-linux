@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.png
+
+# Deck previews are part of the documentation.
+!docs/preview/*.png
