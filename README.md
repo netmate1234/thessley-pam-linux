@@ -11,14 +11,6 @@ Approve Linux logins — `sudo`, GNOME login and lock, SSH, the keyring and the 
 
 ![The four-step approval flow](docs/preview/slide-2.png)
 
-[![thessley-pam-linux — deck](docs/preview/slide-1.png)](https://netmate1234.github.io/thessley-presentations/pam-linux/)
-
-**Interactive deck:** [netmate1234.github.io/thessley-presentations/pam-linux](https://netmate1234.github.io/thessley-presentations/pam-linux/) — arrow keys or click the edges.
-
-| How it works | Trust model |
-|:---:|:---:|
-| [![How it works](docs/preview/slide-2.png)](https://netmate1234.github.io/thessley-presentations/pam-linux/#2) | [![Next](docs/preview/slide-1.png)](https://netmate1234.github.io/thessley-presentations/pam-linux/#1) |
-
 Approve logins to a Linux computer with the Thessley Passkey Android app: `sudo`, the GNOME login and lock screens,
 and `ssh`. The phone holds a key in Android Keystore (hardware-backed when the device supports it), protected by the
 chosen device authentication; the computer only ever holds the matching public key.
