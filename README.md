@@ -2,7 +2,7 @@
 
 Approve Linux logins — `sudo`, GNOME login and lock, SSH, the keyring and the admin page — with the phone that already holds the key.
 
-**Presentation:** [slides on GitHub Pages](https://netmate1234.github.io/thessley-presentations/pam-linux/)
+**Presentation:** [slides on GitHub Pages](https://netmate1234.github.io/thessley-pam-linux/)
 
 - The computer shows a QR with its LAN address, port and certificate hash; the app trusts only that certificate.
 - The phone signs an approve/deny with ECDSA P-256; the computer checks it against the enrolled public keys and accepts one answer.
