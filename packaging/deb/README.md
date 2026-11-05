@@ -47,7 +47,10 @@ its **QR-only GNOME login** switch to block password login. Only accounts with
 an enrolled, working phone can use the QR path in that mode. Keep console or
 another administrator access available. `sudo ./uninstall-login.sh` restores
 password fallback before removing the QR service. Without the admin app, leave
-the default password fallback in place.
+the default password fallback in place. `install-login.sh` arms a 20-minute
+rollback timer (which restarts its countdown after reboot); test the boot-time
+greeter QR and approve in Admin or run `sudo thessley-install-rollback approve`.
+If it is not approved, the previous GDM login configuration is restored.
 The shared approval service arms a 60-minute installation-approval timer after
 its health check. Verify the phone approval and web page, then approve in Admin
 or run `sudo thessley-install-rollback approve`. If it expires, the previous

@@ -235,6 +235,23 @@ class SwitchesTest(unittest.TestCase):
         self.assertEqual(admin_helper.set_login_qr(False, g, lambda: calls.append(1)), "off")
         self.assertEqual(len(calls), 2)  # nothing changed, nothing regenerated
 
+    def test_login_qr_uses_the_gdm_dconf_source_directory(self):
+        dconf = os.path.join(self.dir, "dconf")
+        os.mkdir(dconf)
+        legacy = os.path.join(self.dir, "greeter.dconf-defaults")
+        path = os.path.join(dconf, admin_helper.GDM_DCONF_SETTINGS)
+        self.assertEqual(admin_helper._greeter_path(dconf, legacy), path)
+        self.assertEqual(admin_helper.login_qr_state(path), "absent")
+        calls = []
+        self.assertEqual(admin_helper.set_login_qr(True, path, lambda: calls.append(1)), "on")
+        self.assertIn("enabled-extensions=['" + admin_helper.UUID + "']", open(path).read())
+        self.assertEqual(admin_helper.set_login_qr(False, path, lambda: calls.append(1)), "off")
+        self.assertEqual(len(calls), 2)
+        os.unlink(path)
+        os.unlink(path + ".bak-thessley-admin")
+        os.rmdir(dconf)
+        self.assertEqual(admin_helper._greeter_path(dconf, legacy), legacy)
+
     def test_login_qr_will_not_overwrite_an_existing_shell_section(self):
         g = os.path.join(self.dir, "greeter.dconf-defaults")
         with open(g, "w") as f:

@@ -13,6 +13,16 @@ readonly APP_PATHS=(
     /usr/local/sbin/thessley-pam
     /etc/systemd/system/thessley-pam-approvals.service
     /usr/local/sbin/thessley-ssh-config-rollback
+    /usr/local/sbin/thessley-login-rollback
+    /usr/local/sbin/thessley-install-rollback
+    /etc/pam.d/gdm-thessley
+    /var/lib/thessley-pam/enrolled-users
+    /usr/share/gnome-shell/extensions/thessley-passkey-login@eagleeye-intelligence.com
+    /etc/gdm3/greeter.dconf-defaults
+    /etc/gdm3/greeter.dconf-defaults.bak-thessley
+    /usr/share/gdm/dconf/99-thessley-passkey-login
+    /usr/share/gdm/dconf/99-thessley-passkey-login.bak-thessley-admin
+    /var/lib/gdm3/greeter-dconf-defaults
 )
 
 die() { printf 'Thessley setup rollback: %s\n' "$*" >&2; exit 1; }
@@ -42,7 +52,9 @@ validate_backup() {
 }
 
 assert_clear() {
-    if systemctl is-active --quiet "$TIMER_NAME" || [[ -e $TIMER_PATH || -e $SERVICE_PATH || -e $ACTIVE_BACKUP ]]; then
+    if systemctl is-active --quiet "$TIMER_NAME" || [[ -e $TIMER_PATH || -e $SERVICE_PATH || -e $ACTIVE_BACKUP ]] \
+        || systemctl is-active --quiet thessley-login-rollback.timer \
+        || [[ -e /etc/systemd/system/thessley-login-rollback.timer || -e /var/lib/thessley-login-rollback/active-backup ]]; then
         die 'an installation rollback is already pending. Approve it in Thessley Admin or let it expire before installing again.'
     fi
 }
@@ -98,6 +110,12 @@ restore() {
     local backup path key state failed=0
     [[ -r $ACTIVE_BACKUP ]] || die 'no installation snapshot is recorded.'
     backup=$(validate_backup "$(cat "$ACTIVE_BACKUP")")
+    if systemctl is-active --quiet thessley-login-rollback.timer \
+        || [[ -e /var/lib/thessley-login-rollback/active-backup ]]; then
+        [[ -x /usr/local/sbin/thessley-login-rollback ]] \
+            || die 'the GNOME login rollback helper is missing; cannot safely restore the installation.'
+        /usr/local/sbin/thessley-login-rollback approve
+    fi
     systemctl stop thessley-pam-approvals.service >/dev/null 2>&1 || true
     for path in "${APP_PATHS[@]}"; do
         key=$(printf '%s' "$path" | sed 's#^/##; s#/#__#g')
@@ -108,6 +126,9 @@ restore() {
             cp -a -- "$backup/${path#/}" "$path" || { printf 'Could not restore %s\n' "$path" >&2; failed=1; }
         fi
     done
+    if [[ -x /usr/share/gdm/generate-config ]]; then
+        /usr/share/gdm/generate-config || { echo 'Rollback could not regenerate GDM configuration.' >&2; failed=1; }
+    fi
     systemctl daemon-reload || failed=1
     if [[ $(cat "$backup/service-enabled.state") == enabled ]]; then
         systemctl enable thessley-pam-approvals.service || failed=1
@@ -140,10 +161,22 @@ status() {
     else
         echo 'No installation is awaiting approval.'
     fi
+    if [[ -x /usr/local/sbin/thessley-login-rollback ]]; then
+        /usr/local/sbin/thessley-login-rollback status
+    fi
 }
 
 approve() {
+    local login_pending=0
+    if systemctl is-active --quiet thessley-login-rollback.timer \
+        || [[ -e /var/lib/thessley-login-rollback/active-backup ]]; then
+        [[ -x /usr/local/sbin/thessley-login-rollback ]] \
+            || die 'the GNOME login rollback helper is missing; repair it before approving.'
+        /usr/local/sbin/thessley-login-rollback approve
+        login_pending=1
+    fi
     if ! systemctl is-active --quiet "$TIMER_NAME" && [[ ! -r $ACTIVE_BACKUP ]]; then
+        (( login_pending )) && { echo 'Installation approved. GNOME login rollback stopped.'; return 0; }
         die 'no installation approval is pending.'
     fi
     clear_timer

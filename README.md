@@ -102,7 +102,10 @@ approve with an enrolled phone and confirm GNOME opens your session. Only accoun
 then log in via QR. Keep another administrator session or console access available. Switching QR-only off restores
 password fallback. If QR login fails, use Ctrl+Alt+F3 to reach a console and run `sudo ./uninstall-login.sh`; it restores
 password fallback before removing the QR service. A user without a phone is refused on the QR path, never let through.
-The QR code is sized to the screen (about 36% of its height, 280 to 480 px).
+The installer enables the extension in GDM's active dconf source (a drop-in under `/usr/share/gdm/dconf` on current GDM)
+and arms a 20-minute rollback that restarts its countdown after reboot. Test the QR from a cold boot, then approve the
+installation in Admin or with `sudo thessley-install-rollback approve`; otherwise the previous login configuration is
+restored automatically. The QR code is sized to the screen (about 36% of its height, 280 to 480 px).
 
 Escape route if the login screen misbehaves: Ctrl+Alt+F3, log in, then
 `cd thessley-pam-linux && sudo ./uninstall-login.sh && sudo systemctl restart gdm3`.

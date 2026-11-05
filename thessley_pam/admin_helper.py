@@ -27,6 +27,8 @@ CREDENTIAL = re.compile(r"^c_[0-9a-f]{16}$")
 SUDOERS_DIR = "/etc/sudoers.d"
 PAM_DIR = "/etc/pam.d"
 GREETER = "/etc/gdm3/greeter.dconf-defaults"
+GDM_DCONF_DIR = "/usr/share/gdm/dconf"
+GDM_DCONF_SETTINGS = "99-thessley-passkey-login"
 UUID = "thessley-passkey-login@eagleeye-intelligence.com"
 OFF_MARK = "#thessley-disabled# "  # in front of a PAM line this program switched off; nothing else uses it
 
@@ -169,7 +171,12 @@ def login_qr_only_state(pam_dir: str = PAM_DIR) -> str:
     return "on" if active else "off"
 
 
-def set_login_qr_only(on: bool, pam_dir: str = PAM_DIR, greeter: str = GREETER) -> str:
+def _greeter_path(dconf_dir: str = GDM_DCONF_DIR, legacy: str = GREETER) -> str:
+    """Use the GDM 50+ dconf source directory, falling back to older GDM's config file."""
+    return os.path.join(dconf_dir, GDM_DCONF_SETTINGS) if os.path.isdir(dconf_dir) else legacy
+
+
+def set_login_qr_only(on: bool, pam_dir: str = PAM_DIR, greeter: str | None = None) -> str:
     """Block/unblock GDM password auth, leaving the independent Thessley QR PAM service available.
 
     The deny rule is placed immediately before common-auth and managed reversibly. Refuse unknown PAM layouts,
@@ -218,7 +225,8 @@ def set_login_qr_only(on: bool, pam_dir: str = PAM_DIR, greeter: str = GREETER) 
     return login_qr_only_state(pam_dir)
 
 
-def login_qr_state(greeter: str = GREETER) -> str:
+def login_qr_state(greeter: str | None = None) -> str:
+    greeter = greeter or _greeter_path()
     try:
         with open(greeter) as f:
             return "on" if UUID in f.read() else "off"
@@ -226,14 +234,18 @@ def login_qr_state(greeter: str = GREETER) -> str:
         return "absent"
 
 
-def set_login_qr(on: bool, greeter: str = GREETER,
+def set_login_qr(on: bool, greeter: str | None = None,
                  regenerate=lambda: subprocess.run(["/usr/share/gdm/generate-config"], check=True),
                  pam_dir: str = PAM_DIR) -> str:
     """Show the QR code on the GNOME login screen (an entry in the greeter's dconf defaults) or hide it."""
+    greeter = greeter or _greeter_path()
     if not on and login_qr_only_state(pam_dir) == "on":
         raise ValueError("turn off QR-only login before hiding the Thessley QR screen")
-    with open(greeter) as f:
-        original = f.read()
+    try:
+        with open(greeter, encoding="utf-8") as f:
+            original = f.read()
+    except FileNotFoundError:
+        original = ""
     has = UUID in original
     if on == has:
         return "on" if has else "off"
@@ -247,7 +259,12 @@ def set_login_qr(on: bool, greeter: str = GREETER,
         text = original.replace(block, "")
         if UUID in text:
             raise ValueError("the greeter settings were edited by hand; remove the extension line by hand")
-    _rewrite(greeter, text)
+    if os.path.exists(greeter):
+        _rewrite(greeter, text)
+    else:
+        fd = os.open(greeter, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
     regenerate()
     return "on" if on else "off"
 

@@ -88,7 +88,14 @@ install -o root -g root -m 0755 "$src/thessley-pam" "$tmp/stage/thessley-pam"
 PYTHONPATH="$tmp/stage/lib" python3 -I -c "import ast,pathlib; p=pathlib.Path('$tmp/stage/lib/thessley_pam'); [ast.parse(x.read_text(encoding='utf-8')) for x in p.glob('*.py')]"
 
 # Capture exact prior state, including absence, so a first install can roll back too.
-for path in "$lib" "$bin" "$unit" "$rollback_helper"; do
+for path in "$lib" "$bin" "$unit" "$rollback_helper" \
+            /usr/local/sbin/thessley-install-rollback /usr/local/sbin/thessley-login-rollback \
+            /etc/pam.d/gdm-thessley /var/lib/thessley-pam/enrolled-users \
+            /usr/share/gnome-shell/extensions/thessley-passkey-login@eagleeye-intelligence.com \
+            /etc/gdm3/greeter.dconf-defaults /etc/gdm3/greeter.dconf-defaults.bak-thessley \
+            /usr/share/gdm/dconf/99-thessley-passkey-login \
+            /usr/share/gdm/dconf/99-thessley-passkey-login.bak-thessley-admin \
+            /var/lib/gdm3/greeter-dconf-defaults; do
     key=$(printf '%s' "$path" | sed 's#^/##; s#/#__#g')
     if [[ -e "$path" || -L "$path" ]]; then
         cp -a --parents "$path" "$backup/"
@@ -107,7 +114,14 @@ rollback() {
         trap - ERR EXIT
         echo "Install/activation failed; restoring previous installed files." >&2
         rollback_failed=0
-        for path in "$lib" "$bin" "$unit" "$rollback_helper"; do
+        for path in "$lib" "$bin" "$unit" "$rollback_helper" \
+                    /usr/local/sbin/thessley-install-rollback /usr/local/sbin/thessley-login-rollback \
+                    /etc/pam.d/gdm-thessley /var/lib/thessley-pam/enrolled-users \
+                    /usr/share/gnome-shell/extensions/thessley-passkey-login@eagleeye-intelligence.com \
+                    /etc/gdm3/greeter.dconf-defaults /etc/gdm3/greeter.dconf-defaults.bak-thessley \
+                    /usr/share/gdm/dconf/99-thessley-passkey-login \
+                    /usr/share/gdm/dconf/99-thessley-passkey-login.bak-thessley-admin \
+                    /var/lib/gdm3/greeter-dconf-defaults; do
             key=$(printf '%s' "$path" | sed 's#^/##; s#/#__#g')
             if ! rm -rf -- "$path"; then
                 echo "Rollback could not remove the partial install at $path" >&2

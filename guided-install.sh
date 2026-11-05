@@ -164,7 +164,8 @@ fi
 
 login_installed=no
 if ask "Install QR approval on the GNOME login screen? Password fallback stays enabled by default; QR-only is an opt-in admin setting."; then
-    if [ ! -x /usr/share/gdm/generate-config ] || [ ! -f /etc/gdm3/greeter.dconf-defaults ]; then
+    if [ ! -x /usr/share/gdm/generate-config ] \
+        || { [ ! -d /usr/share/gdm/dconf ] && [ ! -f /etc/gdm3/greeter.dconf-defaults ]; }; then
         echo "GDM configuration is not present; skipping GNOME login integration."
     else
         "$src/install-login.sh"

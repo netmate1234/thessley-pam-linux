@@ -8,7 +8,15 @@ set -eu
 
 uuid=thessley-passkey-login@eagleeye-intelligence.com
 greeter=/etc/gdm3/greeter.dconf-defaults
+gdm_greeter_settings=/usr/share/gdm/dconf/99-thessley-passkey-login
+rollback_helper=/usr/local/sbin/thessley-login-rollback
 gdm_password=/etc/pam.d/gdm-password
+
+# A deliberate uninstall cancels the pending test timer before removing the
+# files it would otherwise restore when it expires.
+if [ -x "$rollback_helper" ]; then
+    "$rollback_helper" approve
+fi
 
 # Restore password fallback before removing the QR PAM service. Reverse only our marked rule, preserving any other
 # administrator or package changes made to gdm-password since the feature was enabled. The helper keeps a root-only
@@ -19,8 +27,16 @@ fi
 
 rm -f /etc/pam.d/gdm-thessley
 rm -rf "/usr/share/gnome-shell/extensions/$uuid"
+changed_greeter=no
+if [ -f "$gdm_greeter_settings" ] && grep -q 'thessley-passkey-login@eagleeye-intelligence.com' "$gdm_greeter_settings"; then
+    rm -f "$gdm_greeter_settings"
+    changed_greeter=yes
+fi
 if [ -f "$greeter.bak-thessley" ]; then
     mv "$greeter.bak-thessley" "$greeter"
+    changed_greeter=yes
+fi
+if [ "$changed_greeter" = yes ]; then
     /usr/share/gdm/generate-config
 fi
 

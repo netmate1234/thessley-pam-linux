@@ -31,6 +31,8 @@ HELPER = "/usr/local/lib/thessley-pam/admin-helper"
 UUID = "thessley-passkey-login@eagleeye-intelligence.com"
 EXTENSION_DIR = f"/usr/share/gnome-shell/extensions/{UUID}"
 GREETER = "/etc/gdm3/greeter.dconf-defaults"
+GDM_DCONF_DIR = "/usr/share/gdm/dconf"
+GDM_DCONF_SETTINGS = "99-thessley-passkey-login"
 PAM_DIR = "/etc/pam.d"
 ADMIN_CMD = "sudo /usr/local/sbin/thessley-pam"
 TERMINALS = (("gnome-terminal", ["--"]), ("ptyxis", ["--"]), ("x-terminal-emulator", ["-e"]), ("xterm", ["-e"]))
@@ -112,12 +114,15 @@ def polkit_problem(pam_dir: str = PAM_DIR) -> str:
     return ""
 
 
-def local_status(pam_dir: str = PAM_DIR, extension_dir: str = EXTENSION_DIR, greeter: str = GREETER,
+def local_status(pam_dir: str = PAM_DIR, extension_dir: str = EXTENSION_DIR, greeter: str | None = None,
                  session_enabled=session_extension_enabled, module_present=_security_dir_has_module) -> list[tuple[str, str, str, str]]:
     """What can be seen without root: (key, title, OK/WARN/OFF, one line of explanation), one row per switch."""
     titles = dict(SWITCHES)
     gdm = _read(os.path.join(pam_dir, "gdm-thessley"))
     sudo = _read(os.path.join(pam_dir, "sudo"))
+    if greeter is None:
+        greeter = (os.path.join(GDM_DCONF_DIR, GDM_DCONF_SETTINGS)
+                   if os.path.isdir(GDM_DCONF_DIR) else GREETER)
     installed = bool(gdm) and os.path.isdir(extension_dir)
     rows = []
     if installed:
