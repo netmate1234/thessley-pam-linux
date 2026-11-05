@@ -62,6 +62,13 @@ source directory:
 
   sudo ./guided-install.sh
 
+GNOME login QR approval leaves GDM password fallback enabled by default. If
+the Thessley Login admin app is installed, first test QR login with fallback
+still on, then use its QR-only GNOME login switch to block password login.
+Only accounts with an enrolled, working phone can use QR-only mode; keep
+console or another administrator access available. `sudo ./uninstall-login.sh`
+restores password fallback before removing the QR service.
+
 The shared service starts a 60-minute installation-approval timer after its
 health check. Verify the phone approval and web page, then approve in Admin or
 run `sudo thessley-install-rollback approve`; otherwise previous core app files
@@ -72,7 +79,7 @@ install.sh or an optional component installer was run, use its documented
 uninstall procedure before removing the source package.
 DOC
 
-tar -C "$root" --exclude=.git --exclude=tests --exclude='*/__pycache__' --exclude=.pytest_cache \
+tar -C "$root" --exclude=.git --exclude=.codegraph --exclude=tests --exclude='*/__pycache__' --exclude=.pytest_cache \
     -cf - . | tar -C "$pkg/opt/thessley-pam-linux" -xf -
 cat > "$pkg/usr/local/sbin/thessley-pam-install" <<'WRAPPER'
 #!/bin/sh

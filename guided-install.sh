@@ -163,12 +163,18 @@ if ask "Install the SSH phone-authentication module? This does not change SSH or
 fi
 
 login_installed=no
-if ask "Install QR approval on the GNOME login screen? The normal password remains available."; then
+if ask "Install QR approval on the GNOME login screen? Password fallback stays enabled by default; QR-only is an opt-in admin setting."; then
     if [ ! -x /usr/share/gdm/generate-config ] || [ ! -f /etc/gdm3/greeter.dconf-defaults ]; then
         echo "GDM configuration is not present; skipping GNOME login integration."
     else
         "$src/install-login.sh"
         login_installed=yes
+        if [ "$admin_installed" = yes ]; then
+            echo "Password fallback is still enabled. Test QR login first; only then consider QR-only in the Thessley Login admin app."
+            echo "To restore password fallback and remove QR login later: sudo ./uninstall-login.sh"
+        else
+            echo "Password fallback remains enabled. Install the admin app separately if you want the optional QR-only setting."
+        fi
     fi
 fi
 

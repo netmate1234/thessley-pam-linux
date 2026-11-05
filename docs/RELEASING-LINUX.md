@@ -24,9 +24,14 @@ gpg --homedir "$HOME/.local/share/thessley-apt-signing/gnupg" \
 Build a versioned package and signed APT repository by setting `GNUPGHOME` to
 the dedicated keyring. For example:
 
+Before publishing GNOME login changes, test the QR path on a supported GDM
+system while password fallback is still enabled. Confirm the admin app reports
+QR-only off by default, and that uninstall restores password fallback. Do not
+enable QR-only as part of a package release test.
+
 ```sh
 GNUPGHOME="$HOME/.local/share/thessley-apt-signing/gnupg" \
-  packaging/deb/build-repo.sh 0.1.11 /tmp/thessley-apt-repo 5B76886E9CDB7C03
+  packaging/deb/build-repo.sh 0.1.16 /tmp/thessley-apt-repo 5B76886E9CDB7C03
 ```
 
 Upload the generated repository contents to:

@@ -39,6 +39,15 @@ VPN approval is
 enabled before phone enrollment starts, so interrupting that step leaves the
 web VPN key controls available while VPN logins remain refused until a phone
 is associated with the VPN host.
+
+For GNOME login, the QR approval service runs alongside GDM's password service;
+password fallback stays enabled by default. If the Thessley Login admin app is
+installed, test QR login first while password fallback is still on, then use
+its **QR-only GNOME login** switch to block password login. Only accounts with
+an enrolled, working phone can use the QR path in that mode. Keep console or
+another administrator access available. `sudo ./uninstall-login.sh` restores
+password fallback before removing the QR service. Without the admin app, leave
+the default password fallback in place.
 The shared approval service arms a 60-minute installation-approval timer after
 its health check. Verify the phone approval and web page, then approve in Admin
 or run `sudo thessley-install-rollback approve`. If it expires, the previous
@@ -69,7 +78,7 @@ Create a dedicated OpenPGP signing key and keep its private key on the release
 machine. Export only the public key as `thessley-archive-keyring.gpg`. Build a
 package and signed repository with:
 
-    packaging/deb/build-repo.sh 0.1.11 /tmp/thessley-apt-repo SIGNING_KEY_ID
+    packaging/deb/build-repo.sh 0.1.16 /tmp/thessley-apt-repo SIGNING_KEY_ID
 
 The repository signing key fingerprint is:
 `563A40578A64324AC1EB05475B76886E9CDB7C03`. The release workstation's private
