@@ -64,6 +64,10 @@ class FakePhone:
 class EnrollTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.saved_default_port = cli.DEFAULT_PORT
+        # These tests run without the root-owned shared approval service. Use
+        # the explicit diagnostic TCP-listener path on an unprivileged port.
+        cli.DEFAULT_PORT = PORT
         store.BASE = self.tmp.name
         store.USERS = os.path.join(self.tmp.name, "users")
         store.ENROLLED = os.path.join(self.tmp.name, "enrolled")
@@ -78,6 +82,7 @@ class EnrollTest(unittest.TestCase):
         self.result = None
 
     def tearDown(self):
+        cli.DEFAULT_PORT = self.saved_default_port
         self.tmp.cleanup()
 
     def start(self):

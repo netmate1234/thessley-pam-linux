@@ -115,7 +115,7 @@ Use `--ip-scope any` only on hosts where SSH clients can arrive from changing ad
 user and service from every source IP until it expires; it still requires an enrolled phone approval and does not apply
 to other PAM services. Switch back with `--ip-scope same`. The setting is stored on this computer.
 
-Before changing SSH or PAM settings, arm the persistent SSH login-recovery timer from this source directory:
+Before changing SSH or PAM settings, arm the persistent SSH login-recovery timer from this source directory. `install-ssh.sh --configure-sshd` now does this automatically before writing its sshd drop-in; do not cancel it until a fresh SSH login has succeeded:
 
     sudo ./ssh-config-rollback.sh arm 10
     sudo ./ssh-config-rollback.sh status
@@ -254,6 +254,26 @@ the app and approve with your fingerprint. SSH continues automatically. In same-
 window go straight in; with `--ip-scope any`, they can come from any address. A shell login shows "approved earlier, valid for another ..." once; `ssh host command` shows nothing. (sshd shows
 PAM text from the auth step again when it opens a shell, so the module leaves the note in `/run/thessley-pam/notes` and
 prints it in the session step instead. Pass reuse is not written to the journal; explicit approvals and pass grants remain logged.
+
+## Verify the SSH gate after installation
+
+Run the test **from a client computer that has the private SSH key matching the account's authorized public key**. Do not test by SSHing from the server back to itself unless that server also has an authorized private key; a `Permission denied (publickey)` in that case happens before PAM and says nothing about the phone gate.
+
+Keep an existing server session open while testing. From the client, use an interactive TTY:
+
+    ssh -tt USER@SERVER
+
+On a first connection, SSH may ask you to trust the server's host-key fingerprint. Verify it through a trusted channel before accepting; this is separate from the Thessley phone approval. After public-key authentication, approve the fresh Thessley request on the phone. Then, on the server, verify the pass and its source address:
+
+    sudo thessley-pam passes
+
+From the **same client and source address**, connect again with `ssh -tt USER@SERVER`. It should get in without another QR while the pass is valid. `ssh -tt` keeps the interactive SSH authentication path available; `BatchMode=yes` disables keyboard-interactive and can fail even when a pass exists. The default pass is tied to user, `sshd`, approving phone, and client IP, and lasts four hours.
+
+To repeat the phone-approval step, end the pass on the server, then make a fresh client connection:
+
+    sudo thessley-pam end-pass --user USER --service sshd
+
+If SSH reports `Permission denied (publickey)`, check that the client has and is offering the right private key and that its public key is authorized; the Thessley gate has not run yet. If public-key authentication succeeds but the gate refuses, check the phone response, user enrollment, source-network policy, and `sudo thessley-pam passes` / SSH logs.
 
 ## Scripts and other non-interactive clients
 

@@ -76,6 +76,12 @@ class WebBase(unittest.TestCase):
         store.ENROLLED = os.path.join(self.tmp.name, "enrolled")
         grants.RUN = os.path.join(self.tmp.name, "run")
         grants.GRANTS = os.path.join(grants.RUN, "grants")
+        old_login_mode = grants.SSH_LOGIN_MODE_PATH
+        old_user_modes = grants.SSH_USER_MODE_DIR
+        grants.SSH_LOGIN_MODE_PATH = os.path.join(store.BASE, "ssh-login-mode")
+        grants.SSH_USER_MODE_DIR = os.path.join(store.BASE, "ssh-users")
+        self.addCleanup(setattr, grants, "SSH_LOGIN_MODE_PATH", old_login_mode)
+        self.addCleanup(setattr, grants, "SSH_USER_MODE_DIR", old_user_modes)
         # the PAM step and the enrolment, as in the other tests
         pam.machine.lan_ip = lambda: "127.0.0.1"
         cli.machine.lan_ip = lambda: "127.0.0.1"
@@ -383,7 +389,7 @@ class WebTest(WebBase):
         self.assertEqual(len(store.devices(USER)), 2)
 
     def test_each_way_of_not_adding_a_device_says_which_it_was(self):
-        for lines, expected in ((["Timed out. Nothing was added."], "No device answered"),
+        for lines, expected in ((["Timed out. Nothing was added."], "did not finish this step"),
                                 (["Not added."], "not confirmed in time or did not match"),
                                 (["Cancelled. Nothing was added."], "cancelled"),
                                 (["error: OSError()"], "Something went wrong"),
@@ -445,14 +451,20 @@ class WebTest(WebBase):
     def vpn_device(self, host="vpn.example.org"):
         return store.add_device(USER, FakePhone().spki, "VPN phone", [], vpn_host=host)
 
+    def simulate_vpn_installation(self):
+        old = web.vpn_available
+        web.vpn_available = lambda: True
+        self.addCleanup(setattr, web, "vpn_available", old)
+
     def test_vpn_devices_are_listed_apart_from_the_ssh_devices(self):
         vpn = self.vpn_device()
-        grants.set_vpn(public_host="vpn.example.org")
+        grants.set_vpn(enabled=True, public_host="vpn.example.org")
+        self.simulate_vpn_installation()
         self.login()
         _, body = self.b.get("/keys")
         keys_part, vpn_part = body.split("<h2>VPN devices</h2>")
         self.assertIn("My phone", keys_part)
-        self.assertNotIn("VPN phone", keys_part)
+        self.assertNotIn("VPN phone</strong>", keys_part)
         self.assertIn("VPN phone", vpn_part)
         self.assertIn(vpn["credential_id"], vpn_part)
         self.assertIn("VPN approvals from vpn.example.org", vpn_part)
@@ -460,6 +472,7 @@ class WebTest(WebBase):
         self.assertNotIn("Add a VPN device", keys_part)
 
     def test_without_a_public_host_a_vpn_device_cannot_be_added_here(self):
+        grants.set_vpn(enabled=True)
         self.login()
         _, body = self.b.get("/keys")
         self.assertNotIn("Add a VPN device", body)
@@ -468,10 +481,14 @@ class WebTest(WebBase):
         self.assertEqual(resp.status, 400)
 
     def test_adding_a_vpn_device_from_the_page_records_the_host(self):
-        grants.set_vpn(public_host="vpn.example.org")
+        grants.set_vpn(enabled=True, public_host="vpn.example.org")
+        self.simulate_vpn_installation()
         self.login()
-        self.step_up("/keys/addvpn", {"user": USER})
-        flow = [f for f in self.app.flows.values() if f.kind == "enroll"][0]
+        resp, _ = self.b.post("/keys/addvpn", {"csrf": self.csrf(), "user": USER})
+        self.assertEqual(resp.status, 303)
+        match = re.fullmatch(r"/enroll/([0-9a-f]{32})", resp.getheader("Location"))
+        self.assertIsNotNone(match)
+        flow = self.app.flows[match.group(1)]
         status = self.wait_for(self.b, flow.id, lambda s: s.get("link"))
         q = {k: v[0] for k, v in parse_qs(urlparse(status["link"]).query).items()}
         self.assertEqual(q["vh"], "vpn.example.org")            # the app is told where VPN approvals will come from
@@ -493,15 +510,17 @@ class WebTest(WebBase):
 
     def test_the_vpn_has_no_passes_and_no_grace_setting(self):
         self.vpn_device()
+        grants.set_vpn(enabled=True, public_host="vpn.example.org")
+        self.simulate_vpn_installation()
         self.pass_for(USER)                                   # an ssh pass is listed
         self.pass_for(USER, "openvpn", "203.0.113.7")         # an old VPN pass (from before) is never listed or offered
         self.admin = True
         self.login()
         _, body = self.b.get("/keys")
         self.assertIn("ssh login", body)
-        self.assertNotIn("VPN login", body)
+        self.assertNotIn("<strong>VPN login</strong>", body)
         self.assertNotIn("VPN passes", body)
-        self.assertIn("no passes and no grace time for the VPN", body)
+        self.assertIn("VPN logins do not use passes or grace time", body)
         self.assertNotIn("counts for the VPN", self.b.get("/admin")[1])
         self.b.post("/admin/set", {"csrf": self.csrf(), "name": "grace_vpn", "value": "3"})
         self.assertEqual(grants.grace_hours("openvpn"), 0)

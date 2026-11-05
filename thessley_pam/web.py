@@ -636,7 +636,8 @@ class WebApp:
         count, when, ip = usage.get(cred, (0, "", ""))
         rows.append(("Approvals in the log", f"{count}" + (f", the last on {when} from {ip}" if count else "")))
         try:
-            held = [p for p in grants.all_passes() if p.get("user") == user and p.get("credential") == cred]
+            held = [p for p in grants.all_passes()
+                    if p.get("user") == user and p.get("credential") == cred and p.get("service") not in grants.NO_GRACE]
         except OSError:
             held = []
         rows.append(("Passes it granted that are still valid",
@@ -1092,8 +1093,15 @@ def keys_page(user: str, viewer: Session, flash: str, admin: bool, users: list[s
                 f'<input type="hidden" name="user" value="{esc(user)}"><div class="row"><button class="primary">{esc(text)}</button></div></form>')
     note = ('<p class="dim">Sensitive changes ask your device for fresh approval. VPN phone enrollment uses the signed-in, phone-approved session and one enrollment QR.</p>')
     vpn_html = ""
-    if vpn_available():
-        vpn_host = grants.vpn_settings()["public_host"]
+    vpn_settings = grants.vpn_settings()
+    vpn_host = vpn_settings["public_host"]
+    if vpn_settings["enabled"] and not vpn_host:
+        vpn_html = ('<h2>VPN devices</h2><p class="dim">Set the public VPN approval host before enrolling VPN devices: '
+                    '<code>sudo thessley-pam vpn public-host NAME</code>.</p>')
+    elif vpn_settings["enabled"] and not vpn_available():
+        vpn_html = ('<h2>VPN devices</h2><p class="dim">VPN approval is enabled but the service or PKI is not ready. '
+                    'Complete the guided VPN setup before managing VPN devices here.</p>')
+    elif vpn_available():
         vpn_note = ("<p class='dim'>Devices enrolled for the VPN approve each VPN login after the client certificate. "
                     "Every connection asks for fresh approval; VPN logins do not use passes or grace time. "
                     "To add a phone here, scan the single enrollment QR, sign on that phone, then confirm the matching code in this browser. "
@@ -2074,11 +2082,14 @@ def make_handler(app: WebApp):
             if action == "add":
                 return self.start_change(s, f"adding a device for {target}", app.change_begin_enroll(target, s.user), SERVICE_DEVICE)
             if action == "addvpn":
-                if not vpn_available():
+                settings = grants.vpn_settings()
+                if not settings["enabled"]:
                     return self.html(404, "Not found", flash_html("The VPN is not available on this computer."), s)
-                host = grants.vpn_settings()["public_host"]
+                host = settings["public_host"]
                 if not host:
                     return self.html(400, "Not possible", flash_html("Set the VPN's public host first: sudo thessley-pam vpn public-host NAME"), s)
+                if not vpn_available():
+                    return self.html(503, "Not ready", flash_html("The VPN service or PKI is not ready on this computer."), s)
                 # The signed-in web session was already phone-approved. Starting a second approval flow here produced a
                 # second QR on the same phone before the actual enrollment QR. Keep this operation bound to the user's
                 # authenticated session; the new key still must sign the enrollment challenge and the browser must confirm

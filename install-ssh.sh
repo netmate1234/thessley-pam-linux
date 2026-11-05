@@ -4,6 +4,7 @@
 #
 #   sudo ./install-ssh.sh                       build and install the PAM module only
 #   sudo ./install-ssh.sh --configure-sshd      also write the sshd Match block (keeps any admin exemption working)
+#                                                arms a 10-minute SSH/PAM rollback; cancel only after testing a new login
 #
 # --configure-sshd writes /etc/ssh/sshd_config.d/10-thessley-ssh-gate.conf instead of appending to the end of
 # /etc/ssh/sshd_config. sshd keeps the first value it sees, and sshd_config.d/*.conf is Included near the top of
@@ -39,7 +40,7 @@ usage() {
 usage: install-ssh.sh [--configure-sshd] [--group NAME]
 
   --configure-sshd   write /etc/ssh/sshd_config.d/10-thessley-ssh-gate.conf,
-                     validate it with sshd -t, and reload ssh
+                     arm a 10-minute rollback, validate it with sshd -t, and reload ssh
   --group NAME       group whose members need the phone step (default: thessley-ssh)
 EOF
 }
@@ -72,11 +73,18 @@ install -o root -g root -m 0644 "$tmp/pam_thessley_phone.so" "$secdir/pam_thessl
 echo "Installed pam_thessley_phone.so in $secdir."
 
 if [ "$configure_sshd" = 1 ]; then
+    rollback="$src/ssh-config-rollback.sh"
+    [ -x "$rollback" ] || { echo "Missing executable SSH rollback helper: $rollback; refusing to change sshd." >&2; exit 1; }
+    # Snapshot SSH/PAM policy and arm a persistent recovery timer before touching
+    # sshd_config. Do not auto-cancel: the operator must prove a fresh SSH login.
+    "$rollback" arm 10
+
     dropin_dir=/etc/ssh/sshd_config.d
     gate=$dropin_dir/10-thessley-ssh-gate.conf
-    [ -d "$dropin_dir" ] || { echo "$dropin_dir does not exist; configure sshd by hand." >&2; exit 1; }
+    [ -d "$dropin_dir" ] || { echo "$dropin_dir does not exist; SSH policy was not changed." >&2; "$rollback" cancel; exit 1; }
     grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config || {
-        echo "/etc/ssh/sshd_config does not Include sshd_config.d; configure sshd by hand." >&2
+        echo "/etc/ssh/sshd_config does not Include sshd_config.d; SSH policy was not changed." >&2
+        "$rollback" cancel
         exit 1
     }
     getent group "$group" >/dev/null || groupadd "$group"
@@ -99,13 +107,19 @@ EOF
 
     if ! sshd -t; then
         if [ "$had_old" = 1 ]; then mv "$old" "$gate"; else rm -f "$gate"; fi
+        "$rollback" cancel
         echo "sshd refused the new configuration; no change was kept." >&2
         exit 1
     fi
     if systemctl reload ssh 2>/dev/null; then :; elif systemctl reload sshd 2>/dev/null; then :; else
-        echo "Could not reload ssh; run: sudo systemctl reload ssh" >&2
+        if [ "$had_old" = 1 ]; then mv "$old" "$gate"; else rm -f "$gate"; fi
+        sshd -t && { systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true; }
+        "$rollback" cancel
+        echo "Could not reload ssh; the previous Thessley drop-in was restored." >&2
+        exit 1
     fi
     echo "Wrote $gate for group $group and reloaded ssh."
+    echo "A 10-minute rollback remains armed. Keep this session open and test a NEW SSH login before cancelling it with: sudo $rollback cancel"
 
     for other in "$dropin_dir"/*.conf; do
         [ -f "$other" ] || continue
@@ -121,4 +135,3 @@ EOF
         echo "Note: /etc/ssh/sshd_config still has a Match Group $group block at its end; it is redundant now."
     fi
 fi
-

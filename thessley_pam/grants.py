@@ -161,7 +161,9 @@ def set_ssh_source_policy(modes: str | list[str] | tuple[str, ...], addresses: s
     store.ensure_dirs()
     config = _load_config()
     if modes == ["any"]:
-        config.pop("ssh_source_modes", None)
+        # Persist an explicit unrestricted choice. Absence means the safer
+        # built-in local+VPN default, not "any".
+        config["ssh_source_modes"] = ["any"]
         config.pop("ssh_source_mode", None)
         config.pop("ssh_allowed_ips", None)
     else:
@@ -204,7 +206,11 @@ def requires_phone(service: str, username: str | None = None) -> bool:
         policy = _SSH_LOGIN_POLICIES.get(mode)
         if policy is None:
             policy = ssh_login_policy()
-        return policy["qr_only"] or policy["key_qr"]
+        # When the policy permits key+password recovery, an unenrolled user
+        # must retain that path. Only phone-only policies require an enrolled
+        # device; otherwise the documented fallback mode would lock out new
+        # or temporarily unenrolled SSH users.
+        return (policy["qr_only"] or policy["key_qr"]) and not policy["key_password"]
     try:
         return service in list(_load_config().get("require", []))
     except TypeError:

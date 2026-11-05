@@ -86,7 +86,18 @@ def write_enrolled_list() -> None:
             if any(not d.get("disabled") for d in json.load(f).get("devices", [])):
                 names.append(entry[:-5])
     text = "".join(n + "\n" for n in names)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".enrolled-users.")
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ENROLLED), prefix=".enrolled-users.")
+    except OSError:
+        # The admin service may be able to update the existing root-owned hint
+        # file even when /etc is mounted read-only for creating a replacement.
+        # Keep the normal atomic replace path whenever the directory is writable.
+        with open(ENROLLED, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(ENROLLED, 0o644)
+        return
     with os.fdopen(fd, "w") as f:
         f.write(text)
     os.chmod(tmp, 0o644)

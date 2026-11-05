@@ -30,6 +30,10 @@ sudo ./install-ssh.sh        # optional: SSH gate
 
 **Verify:** `sudo thessley-pam enroll` prints a QR and `thessley-pam passes` lists active passes.
 
+**Access safety:** core install has a 60-minute approval timer, but that timer does not cover optional SSH/PAM policy edits. Before any access-policy change, keep a working session and separate recovery route open. `install-ssh.sh --configure-sshd` now arms a persistent 10-minute SSH/PAM rollback; test a fresh SSH session before cancelling it. See [SSH recovery](docs/SSH.md).
+
+For the SSH post-install check, connect from a client with the authorized private key, approve the first phone challenge, then reconnect from the same address to confirm the pass avoids a second QR. Do not use a self-SSH attempt as the gate test; see [SSH gate verification](docs/SSH.md#verify-the-ssh-gate-after-installation).
+
 ## How it works
 
 1. The computer shows a QR code with a link (`thessleypam://...`): its LAN address and port, the SHA-256 of a fresh

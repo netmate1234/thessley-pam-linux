@@ -31,6 +31,12 @@ class GrantsTest(unittest.TestCase):
         store.USERS = os.path.join(store.BASE, "users")
         grants.RUN = os.path.join(self.tmp.name, "run")
         grants.GRANTS = os.path.join(grants.RUN, "grants")
+        old_login_mode = grants.SSH_LOGIN_MODE_PATH
+        old_user_modes = grants.SSH_USER_MODE_DIR
+        grants.SSH_LOGIN_MODE_PATH = os.path.join(store.BASE, "ssh-login-mode")
+        grants.SSH_USER_MODE_DIR = os.path.join(store.BASE, "ssh-users")
+        self.addCleanup(setattr, grants, "SSH_LOGIN_MODE_PATH", old_login_mode)
+        self.addCleanup(setattr, grants, "SSH_USER_MODE_DIR", old_user_modes)
         self.now = 1_000_000.0
 
     def test_default_is_always_ask(self):
@@ -148,6 +154,37 @@ class PamPassTest(unittest.TestCase):
         store.ENROLLED = os.path.join(self.tmp.name, "enrolled")
         grants.RUN = os.path.join(self.tmp.name, "run")
         grants.GRANTS = os.path.join(grants.RUN, "grants")
+        old_login_mode = grants.SSH_LOGIN_MODE_PATH
+        old_user_modes = grants.SSH_USER_MODE_DIR
+        grants.SSH_LOGIN_MODE_PATH = os.path.join(store.BASE, "ssh-login-mode")
+        grants.SSH_USER_MODE_DIR = os.path.join(store.BASE, "ssh-users")
+        self.addCleanup(setattr, grants, "SSH_LOGIN_MODE_PATH", old_login_mode)
+        self.addCleanup(setattr, grants, "SSH_USER_MODE_DIR", old_user_modes)
+        for name, value in (("lan_ip", lambda: "127.0.0.1"),):
+            old_value = getattr(pam.machine, name)
+            setattr(pam.machine, name, value)
+            self.addCleanup(setattr, pam.machine, name, old_value)
+        for name, value in (("PORT", 47897), ("WAIT", 3), ("_log", lambda *a, **k: None)):
+            old_value = getattr(pam, name)
+            setattr(pam, name, value)
+            self.addCleanup(setattr, pam, name, old_value)
+        self.said = []
+        old_say = pam._say
+        pam._say = self.said.append
+        self.addCleanup(setattr, pam, "_say", old_say)
+        old_subprocess = pam.subprocess
+
+        def fake_qrencode(cmd, **kw):
+            self.links.append(cmd[-1])
+            return types.SimpleNamespace(stdout="")
+
+        self.links = []
+        pam.subprocess = types.SimpleNamespace(run=fake_qrencode)
+        self.addCleanup(setattr, pam, "subprocess", old_subprocess)
+        self.phone = FakePhone()
+        self.device = store.add_device(USER, self.phone.spki, "Test phone", [])
+        self.env = {"PAM_TYPE": "auth", "PAM_USER": USER, "PAM_SERVICE": "sshd", "PAM_RHOST": "192.168.1.50"}
+        grants.set_grace("sshd", 4)
         pam.machine.lan_ip = lambda: "127.0.0.1"
         pam.PORT = 47897
         pam.WAIT = 3
@@ -160,18 +197,6 @@ class PamPassTest(unittest.TestCase):
                           "PAM_RHOST": "192.0.2.8"}, say=messages.append)
         self.assertEqual(result, pam.REFUSED)
         self.assertIn("not allowed", messages[0])
-        self.said = []
-        pam._say = self.said.append
-        self.links = []
-
-        def fake_qrencode(cmd, **kw):
-            self.links.append(cmd[-1])
-            return types.SimpleNamespace(stdout="")
-        pam.subprocess = types.SimpleNamespace(run=fake_qrencode)
-        self.phone = FakePhone()
-        self.device = store.add_device(USER, self.phone.spki, "Test phone", [])
-        self.env = {"PAM_TYPE": "auth", "PAM_USER": USER, "PAM_SERVICE": "sshd", "PAM_RHOST": "192.168.1.50"}
-        grants.set_grace("sshd", 4)
 
     def login(self, answer="approve", env=None):
         """Run one login; returns (exit code, whether the phone was asked)."""
