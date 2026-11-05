@@ -139,6 +139,72 @@ class SwitchesTest(unittest.TestCase):
         admin_helper.set_pam_feature("sudo-phone", False, self.dir)
         self.assertEqual(open(backup).read(), self.SUDO)  # the first original is what is kept
 
+    def test_login_qr_only_blocks_and_restores_gdm_password_fallback(self):
+        path = os.path.join(self.dir, "gdm-password")
+        original = "#%PAM-1.0\nauth requisite pam_nologin.so\n@include common-auth\n@include common-account\n"
+        with open(path, "w") as f:
+            f.write(original)
+        greeter = os.path.join(self.dir, "greeter.dconf-defaults")
+        with open(greeter, "w") as f:
+            f.write("enabled-extensions=['" + admin_helper.UUID + "']\n")
+        with open(os.path.join(self.dir, "gdm-thessley"), "w") as f:
+            f.write("auth requisite pam_exec.so /usr/local/lib/thessley-pam/pam-helper --login\n")
+
+        self.assertEqual(admin_helper.login_qr_only_state(self.dir), "off")
+        self.assertEqual(admin_helper.set_login_qr_only(True, self.dir, greeter), "on")
+        text = self.read("gdm-password")
+        self.assertIn("auth    requisite       pam_deny.so # THESSLEY_QR_ONLY", text)
+        self.assertLess(text.index("THESSLEY_QR_ONLY"), text.index("@include common-auth"))
+        self.assertEqual(open(path + ".bak-thessley-admin").read(), original)
+        self.assertEqual(admin_helper.set_login_qr_only(False, self.dir, greeter), "off")
+        self.assertIn("#thessley-disabled# auth    requisite", self.read("gdm-password"))
+        self.assertEqual(admin_helper.set_login_qr_only(False, self.dir, greeter), "off")
+        # Restoring fallback stays possible even if a distro update changed the PAM stack meanwhile.
+        with open(path, "w") as f:
+            f.write("#%PAM-1.0\n" + admin_helper.OFF_MARK + admin_helper.QR_ONLY_LINE + "\n")
+        self.assertEqual(admin_helper.set_login_qr_only(False, self.dir, greeter), "off")
+        self.assertIn(admin_helper.OFF_MARK + admin_helper.QR_ONLY_LINE, self.read("gdm-password"))
+
+        with open(path, "w") as f:
+            f.write(original)
+        self.assertEqual(admin_helper.set_login_qr_only(True, self.dir, greeter), "on")
+        self.assertEqual(self.read("gdm-password").count("THESSLEY_QR_ONLY"), 1)
+        with self.assertRaisesRegex(ValueError, "turn off QR-only"):
+            admin_helper.set_login_qr(False, greeter, lambda: None, self.dir)
+
+    def test_login_qr_only_requires_qr_extension_and_known_pam_layout(self):
+        path = os.path.join(self.dir, "gdm-password")
+        original = "#%PAM-1.0\n@include common-auth\n"
+        with open(path, "w") as f:
+            f.write(original)
+        greeter = os.path.join(self.dir, "greeter.dconf-defaults")
+        with open(greeter, "w") as f:
+            f.write("[org/gnome/shell]\nenabled-extensions=[]\n")
+        with open(os.path.join(self.dir, "gdm-thessley"), "w") as f:
+            f.write("auth requisite pam_exec.so /usr/local/lib/thessley-pam/pam-helper --login\n")
+        with self.assertRaisesRegex(ValueError, "enable the Thessley QR"):
+            admin_helper.set_login_qr_only(True, self.dir, greeter)
+        self.assertEqual(self.read("gdm-password"), original)
+        with open(greeter, "w") as f:
+            f.write("enabled-extensions=['" + admin_helper.UUID + "']\n")
+        with open(path, "w") as f:
+            f.write("#%PAM-1.0\nauth required pam_unix.so\n")
+        with self.assertRaisesRegex(ValueError, "common-auth"):
+            admin_helper.set_login_qr_only(True, self.dir, greeter)
+        self.assertNotIn("THESSLEY_QR_ONLY", self.read("gdm-password"))
+
+    def test_login_qr_only_requires_phone_pam_service(self):
+        os.unlink(os.path.join(self.dir, "gdm-thessley"))
+        path = os.path.join(self.dir, "gdm-password")
+        with open(path, "w") as f:
+            f.write("#%PAM-1.0\n@include common-auth\n")
+        greeter = os.path.join(self.dir, "greeter.dconf-defaults")
+        with open(greeter, "w") as f:
+            f.write("enabled-extensions=['" + admin_helper.UUID + "']\n")
+        with self.assertRaisesRegex(ValueError, "phone login PAM service"):
+            admin_helper.set_login_qr_only(True, self.dir, greeter)
+        self.assertNotIn("THESSLEY_QR_ONLY", self.read("gdm-password"))
+
     def test_refuses_to_write_a_file_that_lost_its_essential_line(self):
         with open(os.path.join(self.dir, "sudo"), "w") as f:  # no @include common-auth in this one
             f.write("#%PAM-1.0\nauth       required   pam_exec.so stdout seteuid /usr/local/lib/thessley-pam/pam-helper\n")
@@ -271,7 +337,7 @@ class WindowTest(unittest.TestCase):
         phones = [{"credential_id": "c_0123456789abcdef", "label": "Pixel", "enrolled_at": 1700000000, "last_used": None}]
         state = {"user": USER, "phones": phones, "passwordless_sudo": True,
                  "keyring": {"sealed": True, "readable": True, "error": ""},
-                 "features": {"login_qr": "on", "sudo_phone": "off", "keyring_unlock": "on"}}
+                 "features": {"login_qr": "on", "login_qr_only": "off", "sudo_phone": "off", "keyring_unlock": "on"}}
 
         class Fake:
             removed = []
@@ -296,6 +362,7 @@ class WindowTest(unittest.TestCase):
 
         backend = Fake()
         status = lambda: [("login-qr", "QR code on the login screen", "ok", "Installed."),
+                          ("login-qr-only", "QR-only GNOME login (disable password fallback)", "off", "Password remains."),
                           ("lock-qr", "QR code on your lock screen", "off", "Off."),
                           ("sudo-phone", "Phone approval for sudo", "off", "No."),
                           ("keyring-unlock", "Keyring unlock after a phone login", "ok", "Yes.")]

@@ -52,7 +52,7 @@ For the SSH post-install check, connect from a client with the authorized privat
 | `thessley-pam enroll / list / remove` | Add, list and remove the phones that may approve for a user | `sudo ./install.sh` |
 | `pam-helper` | The PAM step (run by `pam_exec`): asks the phone, answers yes or no | `sudo ./install.sh` |
 | `sudo` phone step | After the password, `sudo` asks the phone | one line in `/etc/pam.d/sudo`, below |
-| GNOME login and lock screens | A QR code under the password box; the password keeps working | `sudo ./install-login.sh` |
+| GNOME login and lock screens | QR approval, with password fallback by default or QR-only via admin window | `sudo ./install-login.sh` |
 | Keyring unlock | A QR login unlocks the GNOME keyring (password sealed in the TPM) | `sudo ./install-keyring.sh`, then `sudo thessley-pam keyring-link` |
 | Thessley Login (admin window) | Switches, phones, keyring link in one window | `sudo ./install-admin.sh` |
 | ssh with a phone pass | ssh key + phone once, then the key alone for N hours | [docs/SSH.md](docs/SSH.md) |
@@ -93,10 +93,15 @@ this step never runs; the admin window warns about it.
 
 ### GNOME login and lock screens
 
-`install-login.sh` installs a PAM service `gdm-thessley` (the phone *instead of* the password) and a GNOME Shell
-extension that draws the QR code under the password field on the login screen and, if you enable it
-(`gnome-extensions enable thessley-passkey-login@eagleeye-intelligence.com`), on your lock screen. Whichever finishes
-first logs you in, so the password always remains. A user without a phone is refused on this path, never let through.
+`install-login.sh` installs a PAM service `gdm-thessley` (phone approval) and a GNOME Shell extension that draws the QR
+code under the password field on the login screen and, if you enable it
+(`gnome-extensions enable thessley-passkey-login@eagleeye-intelligence.com`), on your lock screen. By default, password
+login remains available alongside QR approval. In the admin window, switch on **QR-only GNOME login** to block the
+GDM password path. **Before enabling QR-only, sign out and test a QR login while password fallback is still on:**
+approve with an enrolled phone and confirm GNOME opens your session. Only accounts with an enrolled, working phone can
+then log in via QR. Keep another administrator session or console access available. Switching QR-only off restores
+password fallback. If QR login fails, use Ctrl+Alt+F3 to reach a console and run `sudo ./uninstall-login.sh`; it restores
+password fallback before removing the QR service. A user without a phone is refused on the QR path, never let through.
 The QR code is sized to the screen (about 36% of its height, 280 to 480 px).
 
 Escape route if the login screen misbehaves: Ctrl+Alt+F3, log in, then
@@ -114,8 +119,9 @@ PCR 7 (`keyring-status` tells you). Trade-off: whoever is root on a running, app
 ### Admin window
 
 `thessley-pam-admin` (menu entry "Thessley Login") shows what is switched on and lets you switch the login-screen QR
-code, the lock-screen QR code, the sudo phone step and the keyring unlock on and off, switch each phone off (keeps
-its key, stops it approving) or remove it, and link or forget the keyring password. The root work goes through one
+code, QR-only versus password fallback, the lock-screen QR code, the sudo phone step and the keyring unlock on and off,
+switch each phone off (keeps its key, stops it approving) or remove it, and link or forget the keyring password. The
+root work goes through one
 helper (`admin-helper`) that acts only for the account that started it; with a `NOPASSWD` sudo rule it uses sudo,
 otherwise `pkexec`. Note: a `pam_yubico ... debug` line in `/etc/pam.d/common-auth` makes GNOME's administrator
 prompt abort ("Unknown line ... from helper"); remove the word `debug` if `pkexec` prompts never appear.

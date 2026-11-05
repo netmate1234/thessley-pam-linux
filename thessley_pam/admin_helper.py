@@ -90,6 +90,8 @@ FEATURES = {
     "sudo-phone": ("sudo", "pam-helper", "common-auth"),
     "keyring-unlock": ("gdm-thessley", "pam_thessley_authtok.so", "pam_exec.so"),
 }
+QR_ONLY_LINE = "auth    requisite       pam_deny.so # THESSLEY_QR_ONLY"
+QR_ONLY_NEEDLE = "THESSLEY_QR_ONLY"
 
 
 def _rewrite(path: str, text: str) -> None:
@@ -156,6 +158,66 @@ def set_pam_feature(name: str, on: bool, pam_dir: str = PAM_DIR) -> str:
     return pam_feature_state(name, pam_dir)
 
 
+def login_qr_only_state(pam_dir: str = PAM_DIR) -> str:
+    """Whether GDM password authentication is blocked to make Thessley QR the only password path."""
+    try:
+        with open(os.path.join(pam_dir, "gdm-password"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return "absent"
+    active = any(_pam_line(line, QR_ONLY_NEEDLE) and not line.startswith(OFF_MARK) for line in lines)
+    return "on" if active else "off"
+
+
+def set_login_qr_only(on: bool, pam_dir: str = PAM_DIR, greeter: str = GREETER) -> str:
+    """Block/unblock GDM password auth, leaving the independent Thessley QR PAM service available.
+
+    The deny rule is placed immediately before common-auth and managed reversibly. Refuse unknown PAM layouts,
+    and require the QR greeter extension to be enabled before turning off the password route.
+    """
+    path = os.path.join(pam_dir, "gdm-password")
+    with open(path, encoding="utf-8") as f:
+        original = f.read()
+    lines = original.splitlines()
+    managed = [i for i, line in enumerate(lines) if _pam_line(line, QR_ONLY_NEEDLE)]
+    if len(managed) > 1:
+        raise ValueError("refusing to edit gdm-password: multiple Thessley QR-only rules found")
+    if not on and not managed:
+        return "off"
+    if on and login_qr_state(greeter) != "on":
+        raise ValueError("enable the Thessley QR login screen before disabling password fallback")
+    try:
+        with open(os.path.join(pam_dir, "gdm-thessley"), encoding="utf-8") as f:
+            phone_service = f.read().splitlines()
+    except OSError as exc:
+        raise ValueError("the Thessley phone login PAM service is not installed") from exc
+    if not any(line.lstrip().startswith("auth") and "pam-helper" in line and "--login" in line
+               and not line.lstrip().startswith("#") for line in phone_service):
+        raise ValueError("the Thessley phone login PAM service is not enabled")
+    common_auth = [i for i, line in enumerate(lines)
+                   if line.strip() == "@include common-auth"]
+    if on and not common_auth:
+        raise ValueError("refusing to edit gdm-password: expected an @include common-auth line")
+
+    if managed:
+        i = managed[0]
+        if on and lines[i].startswith(OFF_MARK):
+            lines[i] = lines[i][len(OFF_MARK):]
+        elif not on and not lines[i].startswith(OFF_MARK):
+            lines[i] = OFF_MARK + lines[i]
+        else:
+            return "on" if on else "off"
+    elif on:
+        lines.insert(common_auth[0], QR_ONLY_LINE)
+
+    text = "\n".join(lines) + ("\n" if original.endswith("\n") else "")
+    live = [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    if on and ("@include common-auth" not in live or not any(QR_ONLY_NEEDLE in line for line in live)):
+        raise ValueError("refusing to edit gdm-password: resulting authentication stack failed validation")
+    _rewrite(path, text)
+    return login_qr_only_state(pam_dir)
+
+
 def login_qr_state(greeter: str = GREETER) -> str:
     try:
         with open(greeter) as f:
@@ -164,8 +226,12 @@ def login_qr_state(greeter: str = GREETER) -> str:
         return "absent"
 
 
-def set_login_qr(on: bool, greeter: str = GREETER, regenerate=lambda: subprocess.run(["/usr/share/gdm/generate-config"], check=True)) -> str:
+def set_login_qr(on: bool, greeter: str = GREETER,
+                 regenerate=lambda: subprocess.run(["/usr/share/gdm/generate-config"], check=True),
+                 pam_dir: str = PAM_DIR) -> str:
     """Show the QR code on the GNOME login screen (an entry in the greeter's dconf defaults) or hide it."""
+    if not on and login_qr_only_state(pam_dir) == "on":
+        raise ValueError("turn off QR-only login before hiding the Thessley QR screen")
     with open(greeter) as f:
         original = f.read()
     has = UUID in original
@@ -188,7 +254,8 @@ def set_login_qr(on: bool, greeter: str = GREETER, regenerate=lambda: subprocess
 
 def features() -> dict:
     return {"login_qr": login_qr_state(), "sudo_phone": pam_feature_state("sudo-phone"),
-            "keyring_unlock": pam_feature_state("keyring-unlock")}
+            "keyring_unlock": pam_feature_state("keyring-unlock"),
+            "login_qr_only": login_qr_only_state()}
 
 
 def state(username: str) -> dict:
@@ -211,9 +278,13 @@ def main(argv: list[str], env=None) -> int:
             out = {"removed": store.remove_device(user, argv[1])}
         elif argv[:1] == ["set-phone"] and len(argv) == 3 and CREDENTIAL.match(argv[1]) and argv[2] in ("on", "off"):
             out = {"ok": store.set_disabled(user, argv[1], argv[2] == "off")}
-        elif argv[:1] == ["set-feature"] and len(argv) == 3 and argv[1] in ("login-qr", *FEATURES) and argv[2] in ("on", "off"):
+        elif argv[:1] == ["set-feature"] and len(argv) == 3 and argv[1] in ("login-qr", "login-qr-only", *FEATURES) and argv[2] in ("on", "off"):
             on = argv[2] == "on"
-            out = {"state": set_login_qr(on) if argv[1] == "login-qr" else set_pam_feature(argv[1], on)}
+            if argv[1] == "login-qr-only" and on and not store.active_devices(user):
+                raise ValueError("enroll a Thessley phone for this account before disabling password fallback")
+            out = {"state": (set_login_qr(on) if argv[1] == "login-qr" else
+                             set_login_qr_only(on) if argv[1] == "login-qr-only" else
+                             set_pam_feature(argv[1], on))}
         elif argv[:1] == ["keyring-forget"] and len(argv) == 1:
             out = {"forgotten": keyring.forget(user)}
         else:

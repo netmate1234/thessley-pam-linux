@@ -1,5 +1,5 @@
 #!/bin/sh
-# Opt-in: QR-code login on the GNOME login and lock screens (password keeps working). Run after install.sh.
+# Opt-in: QR-code login on the GNOME login and lock screens (password fallback is configurable). Run after install.sh.
 #
 #   sudo ./install-login.sh
 #

@@ -1,7 +1,7 @@
 #%PAM-1.0
-# Thessley Passkey: log in to GNOME by approving on the phone, instead of typing the password.
-# Started next to gdm-password by the thessley-passkey-login GNOME Shell extension; whichever succeeds first
-# wins, so the password always remains available. Copy of gdm-password with the auth step replaced.
+# Thessley Passkey: log in to GNOME by approving on the phone.
+# Started next to gdm-password by the thessley-passkey-login GNOME Shell extension. Password fallback is controlled
+# separately by a reversible rule in gdm-password; this service remains the phone-only authentication path.
 #
 # The phone step is the only auth step: pam-helper --login refuses any user without an enrolled phone.
 # The login keyring: with `sudo thessley-pam keyring-link` done (install-keyring.sh first), the user's password is

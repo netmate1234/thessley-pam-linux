@@ -6,9 +6,9 @@ passes through this window.
 
     thessley-pam-admin
 
-What it can switch, each with its own switch: the QR code on the login screen, the QR code on your lock screen,
-the phone step for sudo, and the keyring unlock after a phone login. Each phone has a switch (allowed to approve
-or not) and a bin (forget it). The keyring link can be forgotten.
+What it can switch, each with its own switch: the QR code and password fallback on the login screen, the QR code on
+your lock screen, the phone step for sudo, and the keyring unlock after a phone login. Each phone has a switch
+(allowed to approve or not) and a bin (forget it). The keyring link can be forgotten.
 """
 
 import datetime
@@ -39,14 +39,15 @@ PKEXEC_WAIT = 300  # seconds a person gets to type the administrator password
 OK, WARN, OFF = "ok", "warn", "off"
 ICONS = {OK: "object-select-symbolic", WARN: "dialog-warning-symbolic", OFF: "window-close-symbolic"}
 
-# key, title; the first three can be switched with admin rights, "lock-qr" by you alone.
+# key, title; all except "lock-qr" are changed with administrator rights.
 SWITCHES = (
     ("login-qr", "QR code on the login screen"),
+    ("login-qr-only", "QR-only GNOME login (disable password fallback)"),
     ("lock-qr", "QR code on your lock screen"),
     ("sudo-phone", "Phone approval for sudo"),
     ("keyring-unlock", "Keyring unlock after a phone login"),
 )
-NEEDS_ADMIN = {"login-qr", "sudo-phone", "keyring-unlock"}
+NEEDS_ADMIN = {"login-qr", "login-qr-only", "sudo-phone", "keyring-unlock"}
 
 
 def _read(path: str) -> str:
@@ -125,6 +126,12 @@ def local_status(pam_dir: str = PAM_DIR, extension_dir: str = EXTENSION_DIR, gre
                      "On. The password box still works." if on else "Installed, but switched off for the login screen."))
     else:
         rows.append(("login-qr", titles["login-qr"], OFF, "Not installed (sudo ./install-login.sh in thessley-pam-linux)."))
+    gdm_password = _read(os.path.join(pam_dir, "gdm-password"))
+    qr_only = any(line.startswith("auth") and "THESSLEY_QR_ONLY" in line
+                  and not line.startswith("#thessley-disabled#") for line in gdm_password.splitlines())
+    rows.append(("login-qr-only", titles["login-qr-only"], OK if qr_only else OFF,
+                 "On. GDM password login is blocked; accounts need an enrolled phone."
+                 if qr_only else "Off. Password login remains available alongside QR approval."))
     lock_on = session_enabled()
     rows.append(("lock-qr", titles["lock-qr"], OK if lock_on else OFF,
                  "On for your account." if lock_on else "Off for your account."))
@@ -269,7 +276,8 @@ class AdminWindow(Adw.ApplicationWindow):
 
         g = self._fresh_group("Login on this computer")
         features = (self.data or {}).get("features", {})
-        server_keys = {"login-qr": "login_qr", "sudo-phone": "sudo_phone", "keyring-unlock": "keyring_unlock"}
+        server_keys = {"login-qr": "login_qr", "login-qr-only": "login_qr_only",
+                       "sudo-phone": "sudo_phone", "keyring-unlock": "keyring_unlock"}
         for key, title, state, text in self.status_fn():
             if key in server_keys and features.get(server_keys[key]) in ("on", "off"):
                 state = OK if features[server_keys[key]] == "on" else OFF  # the helper saw the real file
@@ -374,6 +382,19 @@ class AdminWindow(Adw.ApplicationWindow):
         GLib.idle_add(self.render)
 
     def toggle_feature(self, key: str, on: bool) -> None:
+        if key == "login-qr-only" and on:
+            self._confirm("Disable password login on GNOME?",
+                          "First test QR login while password fallback is still on: sign out, approve a QR request with "
+                          "your enrolled phone, and confirm GNOME opens your session. Then return here to enable QR-only. "
+                          "This blocks the GDM password authentication path for login and lock screens. Only accounts "
+                          "with an enrolled, working Thessley phone can use the QR path. Keep another administrator "
+                          "session or console access available. If QR login fails afterward, run "
+                          "sudo ./uninstall-login.sh from a console to restore password fallback.",
+                          "Disable password login", lambda: self._set_feature(key, on))
+            return
+        self._set_feature(key, on)
+
+    def _set_feature(self, key: str, on: bool) -> None:
         self._do(lambda: self.backend.set_feature(key, on), "Switched on." if on else "Switched off.")
 
     def toggle_phone(self, credential_id: str, on: bool) -> None:
